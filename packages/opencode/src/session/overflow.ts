@@ -13,8 +13,9 @@ export function isOverflow(input: { cfg: Config.Info; tokens: MessageV2.Assistan
   const count =
     input.tokens.total || input.tokens.input + input.tokens.output + input.tokens.cache.read + input.tokens.cache.write
 
+  const scaledBuffer = Math.min(COMPACTION_BUFFER, Math.floor(context * 0.3))
   const reserved =
-    input.cfg.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(input.model))
+    input.cfg.compaction?.reserved ?? Math.min(scaledBuffer, ProviderTransform.maxOutputTokens(input.model))
   const usable = input.model.limit.input
     ? input.model.limit.input - reserved
     : context - ProviderTransform.maxOutputTokens(input.model)
