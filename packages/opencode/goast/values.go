@@ -27,7 +27,8 @@ func ParseFlatValue(s string) (ast.Expr, error) {
 	// Split on first colon
 	idx := strings.IndexByte(s, ':')
 	if idx < 0 {
-		return nil, fmt.Errorf("invalid flat value (no kind): %q", s)
+		// No kind prefix — try to infer the kind from the value itself.
+		return inferFlatValue(s)
 	}
 
 	kind := s[:idx]
@@ -71,8 +72,70 @@ func ParseFlatValue(s string) (ast.Expr, error) {
 		return &ast.CallExpr{Fun: fn}, nil
 
 	default:
-		return nil, fmt.Errorf("unknown value kind: %q", kind)
+		// Unknown kind — the model may have omitted the kind prefix.
+		// Check if the whole string (kind:content) looks like a value without proper prefix.
+		return inferFlatValue(s)
 	}
+}
+
+// inferFlatValue tries to guess the type of a value when the model omits the
+// kind: prefix. Common patterns from Gemma 4:
+//   - ":8080" or "/path" → string literal
+//   - "handleHTTP" or "ctx" → identifier
+//   - "42" or "3.14" → number literal
+//   - "s.field" → selector
+func inferFlatValue(s string) (ast.Expr, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("empty value")
+	}
+
+	// Looks like a number?
+	if len(s) > 0 && (s[0] >= '0' && s[0] <= '9' || (s[0] == '-' && len(s) > 1)) {
+		if strings.Contains(s, ".") {
+			return &ast.BasicLit{Kind: token.FLOAT, Value: s}, nil
+		}
+		return &ast.BasicLit{Kind: token.INT, Value: s}, nil
+	}
+
+	// Has a dot and starts with a letter? Likely a selector: s.field, cfg.Port
+	if strings.Contains(s, ".") && len(s) > 0 && isLetter(s[0]) {
+		parts := strings.SplitN(s, ".", 2)
+		if len(parts) == 2 && isGoIdent(parts[0]) && isGoIdent(parts[1]) {
+			return &ast.SelectorExpr{
+				X:   ast.NewIdent(parts[0]),
+				Sel: ast.NewIdent(parts[1]),
+			}, nil
+		}
+	}
+
+	// Starts with a letter or underscore and is a valid Go identifier? → ident
+	if isGoIdent(s) {
+		return ast.NewIdent(s), nil
+	}
+
+	// Everything else → string literal (covers ":8080", "/path", "Hello World", etc.)
+	return &ast.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", s)}, nil
+}
+
+func isLetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+func isGoIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	if !isLetter(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !isLetter(c) && !(c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // ParseFlatValues parses a comma-separated string of flat values.

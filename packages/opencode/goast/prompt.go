@@ -598,6 +598,9 @@ func generatePrompt() *PromptResult {
 	sb.WriteString(`You have Go AST editing tools. Each tool performs one AST operation on a Go source file.
 Always call go_inspect first to understand the file structure before editing.
 
+IMPORTANT: Every tool call requires filePath — the file system path to the .go file (e.g. main.go, internal/server/server.go).
+The target parameter is DIFFERENT — it identifies WHICH declaration inside the file to edit (e.g. main, Server.Start, Config.Port).
+
 Value encoding uses kind:content format:
 - Identifiers: ident:err, ident:ctx, ident:x
 - Nil: nil
@@ -609,6 +612,10 @@ Value encoding uses kind:content format:
 
 Target uses dotted paths: FuncName, Type.Method, Struct.Field, Func.if[N], Func.for[N], Func.if[N].else
 When multiple declarations share the same name, append #N: Shape#2 targets the 2nd Shape.
+
+Example: Create a function and add a statement to it (two separate tool calls):
+  1. go_create_function(filePath="main.go", name="handleRequest", params="w:http.ResponseWriter,r:*http.Request")
+  2. go_insert_call(filePath="main.go", target="handleRequest", func="fmt.Fprintf", args="ident:w,string:OK")
 
 `)
 

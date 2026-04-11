@@ -286,9 +286,16 @@ func TestParseFlatValueErrors(t *testing.T) {
 		t.Error("expected error for empty value")
 	}
 
-	_, err = ParseFlatValue("unknown:foo")
-	if err == nil {
-		t.Error("expected error for unknown kind")
+	// "unknown:foo" now falls through to inferFlatValue which treats it as a string.
+	// This is intentional — the model often omits kind prefixes.
+	expr, err := ParseFlatValue("unknown:foo")
+	if err != nil {
+		t.Errorf("expected unknown:foo to be inferred as string, got error: %v", err)
+	} else {
+		lit, ok := expr.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			t.Errorf("expected string literal for unknown:foo, got %T", expr)
+		}
 	}
 
 	_, err = ParseFlatValue("ident:")

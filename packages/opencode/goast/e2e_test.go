@@ -1957,3 +1957,350 @@ func TestLlamaComplexRefactorMVC(t *testing.T) {
 		t.Logf("Repository has %d methods — MVC pattern successfully applied", newMethods)
 	}
 }
+
+// ============================================================================
+// Part 3: Sanitization unit tests
+// ============================================================================
+
+func TestSanitizeIdentifier(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"handlerFunc", "handlerFunc"},
+		{"handlerFunc,handlerFunc", "handlerFunc"},
+		{"handlerFunc,func:", "handlerFunc"},
+		{"name,garbage,more", "name"},
+		{"valid_name123", "valid_name123"},
+		{"has spaces", "hasspaces"},
+		{"has;commas,and;semicolons", "hascommas"},
+		{"", ""},
+		{"_private", "_private"},
+		{"123invalid", "invalid"},
+	}
+	for _, tt := range tests {
+		got := SanitizeIdentifier(tt.input)
+		if got != tt.want {
+			t.Errorf("SanitizeIdentifier(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseToolCallJSON_FilePathRecovery(t *testing.T) {
+	// When the model puts a function name as filePath, it should be moved to target
+	raw := map[string]interface{}{
+		"filePath": "handlerFunc",
+		"func":     "fmt.Println",
+	}
+	op := ParseToolCallJSON(raw)
+	if op.File != "" {
+		t.Errorf("expected empty file, got %q", op.File)
+	}
+	if op.Target != "handlerFunc" {
+		t.Errorf("expected target=handlerFunc, got %q", op.Target)
+	}
+}
+
+func TestParseToolCallJSON_CommaStuffedFieldValues(t *testing.T) {
+	// When the model stuffs multiple params into one field value
+	raw := map[string]interface{}{
+		"filePath": "main.go,target:handleRequest",
+		"func":     "fmt.Println",
+	}
+	op := ParseToolCallJSON(raw)
+	if op.File != "main.go" {
+		t.Errorf("expected file=main.go, got %q", op.File)
+	}
+	if op.Target != "handleRequest" {
+		t.Errorf("expected target=handleRequest, got %q", op.Target)
+	}
+}
+
+func TestParseToolCallJSON_SanitizesNames(t *testing.T) {
+	// Comma-stuffed name should be sanitized
+	raw := map[string]interface{}{
+		"filePath": "main.go",
+		"name":     "handlerFunc,handlerFunc",
+	}
+	op := ParseToolCallJSON(raw)
+	if op.Name != "handlerFunc" {
+		t.Errorf("expected name=handlerFunc, got %q", op.Name)
+	}
+}
+
+// ============================================================================
+// Part 4: TCP→HTTP Refactoring E2E Test
+// ============================================================================
+
+// scaffoldTCPServer creates a simple TCP server for the model to refactor to HTTP.
+func scaffoldTCPServer(t *testing.T) (dir string, mainFile string) {
+	t.Helper()
+	dir = t.TempDir()
+
+	mainGo := `package main
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"time"
+)
+
+const listenAddr = ":8080"
+
+func main() {
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		panic(err)
+	}
+	defer listener.Close()
+	fmt.Println("TCP server listening on", listenAddr)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("accept error:", err)
+			continue
+		}
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil && err != io.EOF {
+		return
+	}
+	response := fmt.Sprintf("Echo: %s", buf[:n])
+	conn.Write([]byte(response))
+}
+`
+	goMod := "module github.com/example/tcpserver\n\ngo 1.22\n"
+
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644)
+	mainFile = filepath.Join(dir, "main.go")
+	os.WriteFile(mainFile, []byte(mainGo), 0644)
+	return dir, mainFile
+}
+
+// TestLlamaTCPtoHTTPRefactor: model refactors a TCP server to use net/http.
+// Validates the full tool chain with the new normalizations and error messages.
+func TestLlamaTCPtoHTTPRefactor(t *testing.T) {
+	if !llamaAvailable() {
+		t.Skip("llama.cpp server not available at " + llamaServerURL)
+	}
+
+	_, mainFile := scaffoldTCPServer(t)
+
+	// Inspect main.go to provide AST context
+	ir := inspectFile(t, mainFile)
+	inspectJSON, _ := json.Marshal(ir)
+
+	prompt := "I have a TCP echo server in " + mainFile + ". Here is its AST structure:\n\n" +
+		string(inspectJSON) + "\n\n" +
+		"Refactor this to be an HTTP server using net/http:\n" +
+		"1. Add import for net/http\n" +
+		"2. Delete the handleConnection function\n" +
+		"3. Create a new handleHTTP function with parameters w:http.ResponseWriter,r:*http.Request\n" +
+		"4. Add a call to fmt.Fprintf(w, \"Hello HTTP\") inside handleHTTP\n" +
+		"5. Clear the main function body\n" +
+		"6. Add http.HandleFunc(\"/\", handleHTTP) in main\n" +
+		"7. Add http.ListenAndServe(\":8080\", nil) in main\n\n" +
+		"Use the Go AST editing tools. Work step by step, one tool call at a time."
+
+	messages := []chatMessage{
+		{Role: "system", Content: goAstSystemPrompt()},
+		{Role: "user", Content: prompt},
+	}
+
+	var ops []string
+	var successEdits, failedEdits int
+	consecutiveFails := 0
+	maxTurns := 20
+
+	for turn := 0; turn < maxTurns; turn++ {
+		resp := sendChat(t, chatRequest{
+			Model:       gemmaE2BModel,
+			Messages:    messages,
+			Tools:       goAstTools(),
+			Temperature: 0.1,
+			MaxTokens:   1024,
+		})
+
+		if len(resp.Choices) == 0 {
+			t.Logf("Turn %d: no choices", turn+1)
+			break
+		}
+		msg := resp.Choices[0].Message
+
+		if len(msg.ToolCalls) == 0 {
+			t.Logf("Turn %d: model finished — %s", turn+1, truncate(msg.Content, 300))
+			break
+		}
+
+		sanitizedCalls := make([]toolCall, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			sanitizedCalls[i] = tc
+			var check json.RawMessage
+			if json.Unmarshal([]byte(tc.Function.Arguments), &check) != nil {
+				sanitizedCalls[i].Function.Arguments = `{"error":"malformed"}`
+			}
+		}
+		messages = append(messages, chatMessage{
+			Role:      "assistant",
+			ToolCalls: sanitizedCalls,
+		})
+
+		turnHadSuccess := false
+
+		for _, tc := range msg.ToolCalls {
+			t.Logf("Turn %d: %s(%s)", turn+1, tc.Function.Name, truncate(tc.Function.Arguments, 400))
+
+			var result string
+
+			switch {
+			case tc.Function.Name == "go_inspect":
+				var args map[string]interface{}
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				fp, _ := args["filePath"].(string)
+				if fp == "" {
+					fp = mainFile
+				}
+				r, err := inspect(fp)
+				if err != nil {
+					errB, _ := json.Marshal(map[string]string{"error": err.Error()})
+					result = string(errB)
+				} else {
+					j, _ := json.Marshal(r)
+					result = string(j)
+				}
+				ops = append(ops, "inspect")
+				turnHadSuccess = true
+
+			case tc.Function.Name == "go_fix":
+				var args map[string]interface{}
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				fp, _ := args["filePath"].(string)
+				if fp == "" {
+					fp = mainFile
+				}
+				r, err := fix(fp)
+				if err != nil {
+					errB, _ := json.Marshal(map[string]string{"error": err.Error()})
+					result = string(errB)
+				} else {
+					j, _ := json.Marshal(r)
+					result = string(j)
+				}
+				ops = append(ops, "fix")
+				turnHadSuccess = true
+
+			case strings.HasPrefix(tc.Function.Name, "go_"):
+				var rawCheck map[string]interface{}
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &rawCheck); err != nil {
+					errB, _ := json.Marshal(map[string]string{
+						"error": "malformed tool call arguments: " + err.Error(),
+						"hint":  "Arguments must be valid JSON.",
+					})
+					result = string(errB)
+					ops = append(ops, "FAIL:parse:"+err.Error())
+					failedEdits++
+					break
+				}
+				op := parseToolCallOp(t, tc, "")
+				if op.File == "" {
+					op.File = mainFile
+				}
+				r, err := edit(op)
+				if err != nil {
+					errB, _ := json.Marshal(map[string]string{
+						"error": err.Error(),
+						"hint":  "filePath must be a .go file path. target is the function/type name. Required params: check the tool description.",
+					})
+					result = string(errB)
+					ops = append(ops, "FAIL:"+op.Op+":"+err.Error())
+					failedEdits++
+				} else {
+					if r.Content != "" {
+						os.WriteFile(op.File, []byte(r.Content), 0644)
+					}
+					result = r.Diff
+					if result == "" {
+						result = "No changes."
+					}
+					ops = append(ops, "OK:"+op.Op+":"+op.Target+":"+op.Name)
+					successEdits++
+					turnHadSuccess = true
+				}
+
+			default:
+				result = `{"error":"unknown tool"}`
+			}
+
+			if len(result) > 3000 {
+				result = result[:3000] + "\n...(truncated)"
+			}
+
+			messages = append(messages, chatMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+
+		if turnHadSuccess {
+			consecutiveFails = 0
+		} else {
+			consecutiveFails++
+			if consecutiveFails >= 3 {
+				t.Logf("Turn %d: breaking — %d consecutive failed turns", turn+1, consecutiveFails)
+				break
+			}
+		}
+	}
+
+	// ---- Verification ----
+	t.Logf("=== Operations: %d total, %d ok, %d failed ===", len(ops), successEdits, failedEdits)
+	for i, op := range ops {
+		t.Logf("  [%d] %s", i+1, op)
+	}
+
+	if successEdits == 0 {
+		t.Fatal("model made no successful edits — refactoring did not start")
+	}
+
+	// main.go must still be valid Go
+	content, err := os.ReadFile(mainFile)
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	errs := parseErrors(mainFile, content)
+	if len(errs) > 0 {
+		t.Errorf("main.go has parse errors after refactoring:\n%v", errs)
+		t.Logf("File content:\n%s", string(content))
+	}
+
+	// Verify HTTP-related changes
+	src := string(content)
+	t.Logf("=== Final source ===\n%s", src)
+
+	if !strings.Contains(src, "net/http") {
+		t.Error("expected net/http import after refactoring")
+	}
+	if strings.Contains(src, "net.Listen") || strings.Contains(src, "listener.Accept") {
+		t.Log("Warning: TCP listener code still present — partial refactoring")
+	}
+	if strings.Contains(src, "http.HandleFunc") || strings.Contains(src, "http.ListenAndServe") || strings.Contains(src, "http.Handle") {
+		t.Log("HTTP server setup detected — refactoring successful")
+	} else {
+		t.Error("expected HTTP server setup (http.HandleFunc or http.ListenAndServe)")
+	}
+
+	// Inspect final state
+	finalInspect := inspectFile(t, mainFile)
+	t.Logf("Functions after refactoring:")
+	for _, fn := range finalInspect.Functions {
+		t.Logf("  %s", fn.Signature)
+	}
+}

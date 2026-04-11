@@ -141,6 +141,12 @@ func applyFixes(src string, errs []scanner.Error) (string, []string) {
 		case fixTrailingSemicolon(lines, lineIdx, line, &fixes):
 			modified[lineIdx] = true
 
+		// fixCorruptedIdentifier must run before fixMissingSemicolon and
+		// fixStatementsOnSameLine — those would incorrectly split the line
+		// at the comma position in "type Config,Config struct {".
+		case fixCorruptedIdentifier(lines, lineIdx, line, col, e.Msg, &fixes):
+			modified[lineIdx] = true
+
 		case fixStatementsOnSameLine(lines, lineIdx, line, col, e.Msg, &fixes):
 			modified[lineIdx] = true
 
@@ -330,6 +336,67 @@ func fixExpectedComma(lines []string, idx int, line string, col int, msg string,
 	lines[idx] = line[:insertAt] + "," + line[insertAt:]
 	*fixes = append(*fixes, fmt.Sprintf("line %d: inserted missing comma at column %d", idx+1, col))
 	return true
+}
+
+// fixCorruptedIdentifier handles identifiers that have been corrupted by the
+// model stuffing commas or other invalid characters into names.
+// Pattern: "func handlerFunc,handlerFunc(" → "func handlerFunc("
+// Pattern: "type Config,Config struct" → "type Config struct"
+func fixCorruptedIdentifier(lines []string, idx int, line string, col int, msg string, fixes *[]string) bool {
+	// Match errors caused by commas in identifiers:
+	// "expected '('" — comma in function name: func name,name(
+	// "expected ';'" or "expected type" — comma in type name: type Name,Name struct
+	// "found ','" — comma where identifier expected
+	isRelevant := strings.Contains(msg, "expected '('") ||
+		strings.Contains(msg, "expected ';'") ||
+		strings.Contains(msg, "expected type") ||
+		strings.Contains(msg, "found ','")
+	if !isRelevant {
+		return false
+	}
+
+	// Look for "func name,name(" or "func name,garbage("
+	reFuncComma := regexp.MustCompile(`(func\s+(?:\([^)]+\)\s+)?)(\w+),\S*(\s*\()`)
+	if reFuncComma.MatchString(line) {
+		lines[idx] = reFuncComma.ReplaceAllString(line, "${1}${2}${3}")
+		*fixes = append(*fixes, fmt.Sprintf("line %d: removed comma-stuffed duplicate from function name", idx+1))
+		return true
+	}
+
+	// Look for "type Name,Name struct" or "type Name,Name interface"
+	reTypeComma := regexp.MustCompile(`(type\s+)(\w+),\S*(\s+(?:struct|interface))`)
+	if reTypeComma.MatchString(line) {
+		lines[idx] = reTypeComma.ReplaceAllString(line, "${1}${2}${3}")
+		*fixes = append(*fixes, fmt.Sprintf("line %d: removed comma-stuffed duplicate from type name", idx+1))
+		return true
+	}
+
+	// For "found ','" errors — the comma itself is the problem.
+	// Check if the previous line has a comma-stuffed identifier pattern.
+	if strings.Contains(msg, "found ','") && idx > 0 {
+		prevLine := lines[idx-1]
+		// Check previous line for type/func comma patterns too
+		if reTypeComma.MatchString(prevLine) {
+			lines[idx-1] = reTypeComma.ReplaceAllString(prevLine, "${1}${2}${3}")
+			*fixes = append(*fixes, fmt.Sprintf("line %d: removed comma-stuffed duplicate from type name", idx))
+			return true
+		}
+		if reFuncComma.MatchString(prevLine) {
+			lines[idx-1] = reFuncComma.ReplaceAllString(prevLine, "${1}${2}${3}")
+			*fixes = append(*fixes, fmt.Sprintf("line %d: removed comma-stuffed duplicate from function name", idx))
+			return true
+		}
+	}
+
+	// Generic: comma inside what should be an identifier, before ( or {
+	reGeneric := regexp.MustCompile(`(\w+),\w+(\s*[({])`)
+	if reGeneric.MatchString(line) {
+		lines[idx] = reGeneric.ReplaceAllString(line, "${1}${2}")
+		*fixes = append(*fixes, fmt.Sprintf("line %d: removed comma-stuffed identifier fragment", idx+1))
+		return true
+	}
+
+	return false
 }
 
 // --- Helpers ---

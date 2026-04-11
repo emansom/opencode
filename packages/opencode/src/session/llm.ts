@@ -12,7 +12,7 @@ import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
-import { SystemPrompt } from "./system"
+import { SystemPrompt, isGemma4, isSmallGemma4, buildGemma4SystemPrompt, getGemma4ModeIndicator } from "./system"
 import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
@@ -201,6 +201,52 @@ export namespace LLM {
     )
 
     const tools = await resolveTools(input)
+
+    // For Gemma 4 models, rebuild the system prompt with resolved tool information
+    if (isGemma4(input.model)) {
+      const toolEntries = Object.entries(tools).map(([id, t]) => ({
+        id,
+        description: (t as any).description as string | undefined,
+        shortHint: (t as any).shortHint as string | undefined,
+      }))
+      // Separate MCP tools (those with '/' in the ID) from built-in tools
+      // For small Gemma 4 models (E4B/E2B), exclude LSP and MCP tools from the system prompt
+      const isSmall = isSmallGemma4(input.model)
+      const builtinTools = toolEntries
+        .filter((t) => !t.id.includes("/"))
+        .filter((t) => !(isSmall && t.id === "lsp"))
+      const mcpToolMap: Record<string, { description?: string }> = {}
+      if (!isSmall) {
+        for (const t of toolEntries.filter((t) => t.id.includes("/"))) {
+          mcpToolMap[t.id] = { description: t.description }
+        }
+      }
+      const gemma4Prompt = buildGemma4SystemPrompt(builtinTools, mcpToolMap)
+      const modeIndicator = getGemma4ModeIndicator(input.agent.name === "plan" ? "plan" : "build")
+      // Rule 5: Adaptive thought efficiency via system instructions.
+      // When thinking effort is "low", add instruction to reduce thinking tokens.
+      const variantName = input.user.model.variant?.toLowerCase() ?? ""
+      const thinkingEffortInstruction = variantName === "low"
+        ? "\n\nKeep your internal reasoning brief and focused. Avoid restating the problem. Jump directly to the solution approach."
+        : ""
+      // Replace the system prompt with the Gemma 4-specific one
+      system.length = 0
+      system.push(gemma4Prompt + thinkingEffortInstruction + "\n\n" + modeIndicator)
+      // Rebuild messages with new system prompt
+      if (!isOpenaiOauth) {
+        messages.length = 0
+        messages.push(
+          ...system.map((x): ModelMessage => ({ role: "system", content: x })),
+          ...input.messages,
+        )
+      }
+
+      // Gemma 4 reasoning control (Rules 1-2):
+      // Strip reasoning from completed prior assistant turns.
+      // Preserve reasoning in the last assistant turn if it contains tool calls
+      // (active tool-calling turn — the model needs its reasoning chain).
+      stripReasoningFromCompletedTurns(messages)
+    }
 
     // LiteLLM and some Anthropic proxies require the tools parameter to be present
     // when message history contains tool calls, even if no tools are being used.
@@ -412,5 +458,47 @@ export namespace LLM {
       }
     }
     return false
+  }
+
+  /**
+   * Gemma 4 reasoning control (Rules 1-2 from Google's prompt formatting guide).
+   *
+   * Rule 1: Strip reasoning/thinking content from completed prior assistant turns
+   * to prevent context bloat and degraded model performance.
+   *
+   * Rule 2: Preserve reasoning in the last assistant turn if it contains tool calls
+   * (active tool-calling turn) — the model needs its reasoning chain for deciding
+   * subsequent tool calls within the same logical turn.
+   *
+   * A turn is "completed" if it's not the last assistant message, or if it's the
+   * last assistant message without pending tool calls.
+   */
+  function stripReasoningFromCompletedTurns(messages: ModelMessage[]): void {
+    // Find the last assistant message index
+    let lastAssistantIdx = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.role === "assistant") {
+        lastAssistantIdx = i
+        break
+      }
+    }
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!
+      if (msg.role !== "assistant") continue
+      if (!Array.isArray(msg.content)) continue
+
+      // Rule 2: preserve reasoning in the last assistant turn if it has tool calls
+      if (i === lastAssistantIdx) {
+        const hasTools = msg.content.some((p: any) => p.type === "tool-call")
+        if (hasTools) continue // Active tool-calling turn — preserve reasoning
+      }
+
+      // Rule 1: strip reasoning from this completed turn
+      const filtered = msg.content.filter((p: any) => p.type !== "reasoning")
+      if (filtered.length < msg.content.length) {
+        msg.content = filtered as typeof msg.content
+      }
+    }
   }
 }

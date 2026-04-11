@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 )
 
 // KnownOps is the set of valid operation names. Each maps to an individual
@@ -31,6 +32,61 @@ var KnownOps = map[string]bool{
 	"gopls_rename": true, "organize_imports": true,
 }
 
+// SanitizeIdentifier cleans a Go identifier that may have been corrupted by
+// the model. Handles comma-stuffed values ("handlerFunc,handlerFunc" → "handlerFunc")
+// and strips characters invalid in Go identifiers.
+func SanitizeIdentifier(s string) string {
+	if s == "" {
+		return s
+	}
+	// Take first comma-separated value — model sometimes doubles or comma-stuffs.
+	if idx := strings.IndexByte(s, ','); idx > 0 {
+		s = s[:idx]
+	}
+	s = strings.TrimSpace(s)
+	// Strip characters that aren't valid in Go identifiers.
+	// Track whether we've started the identifier (seen a letter/underscore)
+	// so we skip leading digits.
+	var buf strings.Builder
+	started := false
+	for _, r := range s {
+		if r == '_' || unicode.IsLetter(r) {
+			buf.WriteRune(r)
+			started = true
+		} else if started && unicode.IsDigit(r) {
+			buf.WriteRune(r)
+		}
+	}
+	result := buf.String()
+	if result == "" {
+		return s // Return original if sanitization removed everything
+	}
+	return result
+}
+
+// sanitizeCommaStuffedField takes a field value that may contain embedded
+// key:value pairs from the model cramming multiple params into one field.
+// Returns the cleaned value and any extracted extra key:value pairs.
+// Example: "handlerFunc,func:fmt.Println" → "handlerFunc", [("func","fmt.Println")]
+func sanitizeCommaStuffedField(val string) (string, []fieldPair) {
+	if !strings.Contains(val, ",") {
+		return val, nil
+	}
+	parts := strings.Split(val, ",")
+	clean := parts[0]
+	var extras []fieldPair
+	for _, part := range parts[1:] {
+		k, v, ok := strings.Cut(part, ":")
+		if ok && k != "" {
+			extras = append(extras, fieldPair{k: strings.TrimSpace(k), v: strings.TrimSpace(v)})
+		}
+		// If no colon, it might be a duplicated value — ignore it
+	}
+	return clean, extras
+}
+
+type fieldPair struct{ k, v string }
+
 // ParseToolCallJSON converts raw JSON arguments from a model's tool call into
 // an Operation struct. It handles model confusion patterns such as using the op
 // name as a JSON key instead of as the value of the "op" field.
@@ -44,12 +100,47 @@ func ParseToolCallJSON(raw map[string]interface{}) Operation {
 		delete(raw, "filePath")
 	}
 
+	// Pre-clean: detect comma-stuffed field values and extract embedded params.
+	// Example: {"file":"handlerFunc,func:fmt.Println"} → file=handlerFunc + func=fmt.Println
+	for key, val := range raw {
+		s, ok := val.(string)
+		if !ok || key == "args" || key == "params" || key == "returns" || key == "valueArgs" || key == "tag" || key == "text" || key == "directive" || key == "constraint" {
+			continue // These fields legitimately contain commas
+		}
+		cleaned, extras := sanitizeCommaStuffedField(s)
+		if len(extras) > 0 {
+			raw[key] = cleaned
+			for _, kv := range extras {
+				if _, exists := raw[kv.k]; !exists {
+					raw[kv.k] = kv.v
+				}
+			}
+		}
+	}
+
 	// Use json round-trip: the Operation struct has json tags matching
 	// every field name, so this handles all standard fields in one step.
 	data, _ := json.Marshal(raw)
 	var op Operation
 	json.Unmarshal(data, &op)
 	op.Mode = "edit"
+
+	// Sanitize identifier fields — prevent file corruption from comma-stuffed
+	// or invalid-character names like "handlerFunc,handlerFunc".
+	op.Name = SanitizeIdentifier(op.Name)
+	op.FieldName = SanitizeIdentifier(op.FieldName)
+	op.ReceiverVar = SanitizeIdentifier(op.ReceiverVar)
+	op.Method = SanitizeIdentifier(op.Method)
+	op.MethodName = SanitizeIdentifier(op.MethodName)
+
+	// Fix filePath/target confusion: if file doesn't look like a .go file path,
+	// the model probably put a function/type name there instead.
+	if op.File != "" && !strings.HasSuffix(op.File, ".go") && !strings.Contains(op.File, "/") && !strings.Contains(op.File, "\\") {
+		if op.Target == "" {
+			op.Target = op.File
+		}
+		op.File = "" // Will be caught by the caller with a helpful error
+	}
 
 	// Detect comma-stuffed op: "op":"insert_assign_call,target:X,vars:Y"
 	// The model sometimes crams multiple params into the op field as CSV.

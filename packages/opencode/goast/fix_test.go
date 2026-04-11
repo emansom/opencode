@@ -234,6 +234,64 @@ func foo() {
 	}
 }
 
+func TestFixCorruptedIdentifier(t *testing.T) {
+	// Model comma-stuffed a function name: "func handlerFunc,handlerFunc("
+	src := `package main
+
+func handlerFunc,handlerFunc(w http.ResponseWriter, r *http.Request) {
+}
+`
+	p := writeTempGo(t, src)
+	result, err := fix(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success, got remaining errors: %v", result.RemainingErrs)
+	}
+
+	got, _ := os.ReadFile(p)
+	// The comma-stuffed name should be cleaned up
+	if strings.Contains(string(got), "handlerFunc,handlerFunc") {
+		t.Error("corrupted function name still present")
+	}
+	// Should contain just "handlerFunc" once as the function name
+	if !strings.Contains(string(got), "func handlerFunc(") {
+		t.Errorf("expected 'func handlerFunc(' in output, got:\n%s", string(got))
+	}
+	errs := parseErrors(p, got)
+	if len(errs) > 0 {
+		t.Errorf("still has parse errors: %v\nFile:\n%s", errs, string(got))
+	}
+}
+
+func TestFixCorruptedTypeName(t *testing.T) {
+	// Model comma-stuffed a type name: "type Config,Config struct"
+	src := `package main
+
+type Config,Config struct {
+	Port int
+}
+`
+	p := writeTempGo(t, src)
+	result, err := fix(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success, got remaining errors: %v", result.RemainingErrs)
+	}
+
+	got, _ := os.ReadFile(p)
+	if strings.Contains(string(got), "Config,Config") {
+		t.Error("corrupted type name still present")
+	}
+	errs := parseErrors(p, got)
+	if len(errs) > 0 {
+		t.Errorf("still has parse errors: %v\nFile:\n%s", errs, string(got))
+	}
+}
+
 func TestFixProducesDiff(t *testing.T) {
 	src := `package main
 

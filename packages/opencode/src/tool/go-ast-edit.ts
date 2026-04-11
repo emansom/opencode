@@ -81,18 +81,35 @@ function buildSchema(params: ToolParam[]): z.ZodObject<any> {
 
 /** Create a Tool.define() for one operation from the registry. */
 function defineGoOp(info: ToolInfo) {
+  // Determine which params are required for this operation (for error hints).
+  const requiredParams = info.params.filter((p) => p.required).map((p) => p.name)
+
   return Tool.define(info.name, {
     description: info.description,
-    shortDescription: info.description.split(".")[0],
     parameters: buildSchema(info.params),
     async execute(params: Record<string, unknown>, ctx: any) {
-      const filePath = path.isAbsolute(params.filePath as string)
-        ? (params.filePath as string)
-        : path.join(Instance.directory, params.filePath as string)
+      const rawFilePath = params.filePath as string
+      if (!rawFilePath) {
+        throw new Error(
+          `${info.name}: missing filePath parameter. ` +
+          `filePath must be the file system path to the .go file (e.g. main.go, internal/server/server.go). ` +
+          `Required params for ${info.name}: filePath, ${requiredParams.join(", ")}`,
+        )
+      }
+      const filePath = path.isAbsolute(rawFilePath)
+        ? rawFilePath
+        : path.join(Instance.directory, rawFilePath)
       await assertExternalDirectory(ctx, filePath)
 
       if (!filePath.endsWith(".go")) {
-        throw new Error(`${info.name} only works on .go files`)
+        // The model likely put a function/target name as filePath
+        const hint = requiredParams.includes("target")
+          ? ` Did you mean target="${rawFilePath}"? target is the declaration name inside the file.`
+          : ""
+        throw new Error(
+          `${info.name}: filePath "${rawFilePath}" is not a .go file. ` +
+          `filePath must be the file system path (e.g. main.go, internal/server/server.go).${hint}`,
+        )
       }
 
       let diff = ""
