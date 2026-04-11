@@ -24,6 +24,9 @@ import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
 import { Truncate } from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
+import { loadGoAstEditTools } from "./go-ast-edit"
+import { GoAstInspectTool } from "./go-ast-inspect"
+import { GoFixTool } from "./go-fix"
 import { Glob } from "../util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -158,10 +161,20 @@ export namespace ToolRegistry {
             code: Tool.init(CodeSearchTool),
             skill: Tool.init(SkillTool),
             patch: Tool.init(ApplyPatchTool),
+            goAstInspect: Tool.init(GoAstInspectTool),
+            goFix: Tool.init(GoFixTool),
             question: Tool.init(question),
             lsp: Tool.init(LspTool),
             plan: Tool.init(PlanExitTool),
           })
+
+          // Load individual Go AST edit tools from the Go helper's operation
+          // registry. Each tool corresponds to one AST operation in Gemma 4's
+          // FC (Function Calling) format: one tool per action, flat parameters.
+          const goAstEditDefs = yield* Effect.promise(() => loadGoAstEditTools())
+          const goAstEditTools = yield* Effect.all(
+            goAstEditDefs.map((def) => Tool.init(def)),
+          )
 
           return {
             custom,
@@ -181,6 +194,9 @@ export namespace ToolRegistry {
               tool.code,
               tool.skill,
               tool.patch,
+              ...goAstEditTools,
+              tool.goAstInspect,
+              tool.goFix,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

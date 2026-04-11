@@ -36,6 +36,8 @@ function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
 
 export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
+  shortDescription: "Replace exact text in a file with new text",
+  shortHint: "Call the edit tool to replace exact text in a file. Pass 'filePath', 'oldString' (text to find), and 'newString' (replacement). Set 'replaceAll' to true to replace all occurrences. This is the preferred tool for modifying existing files.",
   parameters: z.object({
     filePath: z.string().describe("The absolute path to the file to modify"),
     oldString: z.string().describe("The text to replace"),
@@ -46,6 +48,12 @@ export const EditTool = Tool.define("edit", {
     if (!params.filePath) {
       throw new Error("filePath is required")
     }
+
+    if (params.filePath.endsWith(".go")) {
+      throw new Error("Cannot use the edit tool on .go files. Use AST editing tools like go_create_function, go_add_struct_field, go_insert_call, etc. If the file has syntax errors, use go_fix first.")
+    }
+
+
 
     if (params.oldString === params.newString) {
       throw new Error("No changes to apply: oldString and newString are identical.")

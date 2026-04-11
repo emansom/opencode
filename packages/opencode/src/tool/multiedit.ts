@@ -7,6 +7,8 @@ import { Instance } from "../project/instance"
 
 export const MultiEditTool = Tool.define("multiedit", {
   description: DESCRIPTION,
+  shortDescription: "Apply multiple text replacements on one file",
+  shortHint: "Call the multiedit tool to apply multiple sequential text replacements on one file. Pass 'filePath' and an 'edits' array of {oldString, newString} objects.",
   parameters: z.object({
     filePath: z.string().describe("The absolute path to the file to modify"),
     edits: z
@@ -21,6 +23,10 @@ export const MultiEditTool = Tool.define("multiedit", {
       .describe("Array of edit operations to perform sequentially on the file"),
   }),
   async execute(params, ctx) {
+    if (params.filePath.endsWith(".go")) {
+      throw new Error("Cannot use the multiedit tool on .go files. Use AST editing tools like go_create_function, go_add_struct_field, go_insert_call, etc. If the file has syntax errors, use go_fix first.")
+    }
+
     const tool = await EditTool.init()
     const results = []
     for (const [, edit] of params.edits.entries()) {

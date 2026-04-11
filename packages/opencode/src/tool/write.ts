@@ -19,15 +19,23 @@ const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
 export const WriteTool = Tool.define("write", {
   description: DESCRIPTION,
+  shortDescription: "Create a new file or fully rewrite an existing file",
+  shortHint: "Call the write tool to create a new file or fully rewrite an existing one. Pass 'filePath' and 'content'. Only use when creating new files; prefer the edit tool for changes.",
   parameters: z.object({
     content: z.string().describe("The content to write to the file"),
     filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
   }),
   async execute(params, ctx) {
     const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
+
+    if (filepath.endsWith(".go") && await Filesystem.exists(filepath)) {
+      throw new Error("Cannot use the write tool to modify existing .go files. Use AST editing tools like go_create_function, go_add_struct_field, go_insert_call, etc. If the file has syntax errors, use go_fix first.")
+    }
     await assertExternalDirectory(ctx, filepath)
 
     const exists = await Filesystem.exists(filepath)
+
+
     const contentOld = exists ? await Filesystem.readText(filepath) : ""
     if (exists) await FileTime.assert(ctx.sessionID, filepath)
 

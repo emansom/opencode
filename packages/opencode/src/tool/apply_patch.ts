@@ -21,6 +21,8 @@ const PatchParams = z.object({
 
 export const ApplyPatchTool = Tool.define("apply_patch", {
   description: DESCRIPTION,
+  shortDescription: "Apply unified diff patches across multiple files",
+  shortHint: "Call the apply_patch tool to apply unified diff patches across multiple files. Pass the full patch text as 'patchText'.",
   parameters: PatchParams,
   async execute(params, ctx) {
     if (!params.patchText) {
@@ -34,6 +36,14 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
       hunks = parseResult.hunks
     } catch (error) {
       throw new Error(`apply_patch verification failed: ${error}`)
+    }
+
+
+    // Block .go files — use go_* AST tools for editing
+    const goHunks = hunks.filter(h => h.path.endsWith(".go"))
+    if (goHunks.length > 0) {
+      const goPaths = goHunks.map(h => h.path).join(", ")
+      throw new Error(`Cannot use apply_patch on .go files (${goPaths}). Use AST editing tools like go_create_function, go_add_struct_field, go_insert_call, etc. If the files have syntax errors, use go_fix first.`)
     }
 
     if (hunks.length === 0) {
