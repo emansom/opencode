@@ -35,6 +35,8 @@ interface McpCodeResponse {
 
 export const CodeSearchTool = Tool.define("codesearch", {
   description: DESCRIPTION,
+  shortDescription: "Search the web for code examples and documentation",
+  shortHint: "Call the codesearch tool to search the web for code examples and API documentation. Pass a 'query' describing what you need.",
   parameters: z.object({
     query: z
       .string()

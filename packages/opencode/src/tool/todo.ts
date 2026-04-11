@@ -19,6 +19,8 @@ export const TodoWriteTool = Tool.defineEffect<typeof parameters, Metadata, Todo
 
     return {
       description: DESCRIPTION_WRITE,
+      shortDescription: "Track task progress with a structured todo list",
+      shortHint: "Call the todowrite tool to track your progress. Pass a 'todos' array with {content, status} objects. Set status to 'pending', 'in_progress', or 'completed'. Create todos at the start of every task and update them as you work.",
       parameters,
       async execute(params: z.infer<typeof parameters>, ctx: Tool.Context<Metadata>) {
         await ctx.ask({

@@ -13,13 +13,14 @@ import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSch
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider/transform"
-import { SystemPrompt } from "./system"
+import { SystemPrompt, isGemma4, isSmallGemma4 } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { ToolRegistry } from "../tool/registry"
+import { flattenToolSchema, expandToolCallArgs, type FlattenMap } from "../provider/gemma4-tool-format"
 import { MCP } from "../mcp"
 import { LSP } from "../lsp"
 import { FileTime } from "../file/time"
@@ -385,26 +386,83 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             ),
         })
 
+        // Essential tools for small Gemma 4 models (E4B/E2B)
+        const gemma4EssentialTools = new Set([
+          // File operations
+          "bash", "read", "write", "edit", "multiedit", "apply_patch",
+          // Go AST tools (go_inspect, go_fix, and all go_* edit tools)
+          "go_inspect", "go_fix",
+          // Search & discovery
+          "glob", "grep", "ls",
+          // UI state management
+          "todowrite", "question", "plan_exit", "plan_enter", "task", "skill",
+        ])
+        // All go_* tools are essential for Gemma 4 (individual edit tools)
+        const isGemma4Essential = (id: string) =>
+          gemma4EssentialTools.has(id) || id.startsWith("go_")
+        const useGemma4Concise = isGemma4(input.model)
+        const useGemma4Restricted = isSmallGemma4(input.model)
+
+        // Strip parameter descriptions and metadata from schemas for Gemma 4
+        function stripSchemaForGemma4(schema: Record<string, any>): Record<string, any> {
+          const result: Record<string, any> = {}
+          for (const [k, v] of Object.entries(schema)) {
+            if (k === "description" || k === "examples" || k === "default" || k === "minimum" || k === "maximum") continue
+            if (k === "properties" && typeof v === "object") {
+              const props: Record<string, any> = {}
+              for (const [pk, pv] of Object.entries(v as Record<string, any>)) {
+                props[pk] = stripSchemaForGemma4(pv as Record<string, any>)
+              }
+              result[k] = props
+            } else {
+              result[k] = v
+            }
+          }
+          return result
+        }
+
         for (const item of yield* registry.tools({
           modelID: ModelID.make(input.model.api.id),
           providerID: input.model.providerID,
           agent: input.agent,
         })) {
-          const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
-          tools[item.id] = tool({
+          // Skip non-essential tools for small Gemma 4 models
+          if (useGemma4Restricted && !isGemma4Essential(item.id)) continue
+
+          let schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
+          let description = item.description
+
+          if (useGemma4Concise) {
+            description = item.shortDescription ?? (description?.split(/[.\n]/)[0]?.trim().slice(0, 80) || "")
+            schema = stripSchemaForGemma4(schema)
+          }
+
+          // Flatten nested object/array parameters to basic types
+          let itemFlattenMap: FlattenMap | undefined
+          const { flattenedSchema, flattenMap: fm } = flattenToolSchema(schema)
+          if (fm.size > 0) {
+            schema = flattenedSchema
+            itemFlattenMap = fm
+          }
+
+          const t = tool({
             id: item.id as any,
-            description: item.description,
+            description,
             inputSchema: jsonSchema(schema as any),
             execute(args, options) {
+              // Expand flat args back to nested structure before executing
+              const expanded = itemFlattenMap
+                ? expandToolCallArgs(args as Record<string, unknown>, itemFlattenMap)
+                : args
               return Effect.runPromise(
                 Effect.gen(function* () {
-                  const ctx = context(args, options)
+                  const ctx = context(expanded, options)
                   yield* plugin.trigger(
                     "tool.execute.before",
                     { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
-                    { args },
+                    { args: expanded },
                   )
-                  const result = yield* Effect.promise(() => item.execute(args, ctx))
+                  const result = yield* Effect.promise(() => item.execute(expanded, ctx))
                   const output = {
                     ...result,
                     attachments: result.attachments?.map((attachment) => ({
@@ -416,7 +474,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   }
                   yield* plugin.trigger(
                     "tool.execute.after",
-                    { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID, args },
+                    { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID, args: expanded },
                     output,
                   )
                   if (options.abortSignal?.aborted) {
@@ -427,6 +485,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               )
             },
           })
+          // Attach shortHint for Gemma 4 system prompt builder (not used by AI SDK)
+          if (item.shortHint) (t as any).shortHint = item.shortHint
+          tools[item.id] = t
         }
 
         for (const [key, item] of Object.entries(yield* mcp.tools())) {
@@ -434,20 +495,33 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (!execute) continue
 
           const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-          const transformed = ProviderTransform.schema(input.model, schema)
+          let transformed = ProviderTransform.schema(input.model, schema)
+
+          // Flatten nested MCP tool parameters to basic types
+          let mcpFlattenMap: FlattenMap | undefined
+          const { flattenedSchema: mcpFlat, flattenMap: mcpFm } = flattenToolSchema(transformed)
+          if (mcpFm.size > 0) {
+            transformed = mcpFlat
+            mcpFlattenMap = mcpFm
+          }
+
           item.inputSchema = jsonSchema(transformed)
           item.execute = (args, opts) =>
             Effect.runPromise(
               Effect.gen(function* () {
-                const ctx = context(args, opts)
+                // Expand flat args back to nested structure for MCP server
+                const expanded = mcpFlattenMap
+                  ? expandToolCallArgs(args as Record<string, unknown>, mcpFlattenMap)
+                  : args
+                const ctx = context(expanded, opts)
                 yield* plugin.trigger(
                   "tool.execute.before",
                   { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
-                  { args },
+                  { args: expanded },
                 )
                 yield* Effect.promise(() => ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] }))
                 const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.promise(() =>
-                  execute(args, opts),
+                  execute(expanded, opts),
                 )
                 yield* plugin.trigger(
                   "tool.execute.after",

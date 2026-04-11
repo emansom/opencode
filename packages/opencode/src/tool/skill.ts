@@ -34,6 +34,8 @@ export const SkillTool = Tool.define("skill", async () => {
 
   return {
     description,
+    shortDescription: "Load a specialized skill for domain-specific work",
+    shortHint: "Call the skill tool to load a specialized skill. Pass the skill 'name' to activate domain-specific instructions.",
     parameters: Parameters,
     async execute(params: z.infer<typeof Parameters>, ctx) {
       const skill = await Skill.get(params.name)

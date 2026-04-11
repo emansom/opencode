@@ -18,6 +18,8 @@ async function getLastModel(sessionID: SessionID) {
 
 export const PlanExitTool = Tool.define("plan_exit", {
   description: EXIT_DESCRIPTION,
+  shortDescription: "Signal that the plan is complete for user review",
+  shortHint: "Call the plan_exit tool when your plan is complete and ready for user review.",
   parameters: z.object({}),
   async execute(_params, ctx) {
     const session = await Session.get(ctx.sessionID)

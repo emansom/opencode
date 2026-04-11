@@ -468,6 +468,8 @@ export const BashTool = Tool.define("bash", async () => {
       .replaceAll("${chaining}", chain)
       .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
       .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
+    shortDescription: "Run a shell command for builds, tests, or system operations",
+    shortHint: "Call the bash tool to run shell commands. Use it for builds, tests, git, docker, or system tasks. Pass the command string as the 'command' parameter.",
     parameters: Parameters,
     async execute(params, ctx) {
       const cwd = params.workdir ? await resolvePath(params.workdir, Instance.directory, shell) : Instance.directory

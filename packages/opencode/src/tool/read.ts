@@ -217,6 +217,8 @@ export const ReadTool = Tool.defineEffect(
 
     return {
       description: DESCRIPTION,
+      shortDescription: "Read file contents before editing or to understand code",
+      shortHint: "Call the read tool to read file or directory contents. Always call read before editing any file. Pass the file path as 'filePath'. Use 'offset' and 'limit' for large files.",
       parameters,
       async execute(params: z.infer<typeof parameters>, ctx) {
         return Effect.runPromise(run(params, ctx).pipe(Effect.orDie))

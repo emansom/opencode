@@ -29,6 +29,8 @@ export namespace Tool {
   export interface Def<Parameters extends z.ZodType = z.ZodType, M extends Metadata = Metadata> {
     id: string
     description: string
+    shortDescription?: string
+    shortHint?: string
     parameters: Parameters
     execute(
       args: z.infer<Parameters>,

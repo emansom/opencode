@@ -11,6 +11,8 @@ const MAX_TIMEOUT = 120 * 1000 // 2 minutes
 
 export const WebFetchTool = Tool.define("webfetch", {
   description: DESCRIPTION,
+  shortDescription: "Fetch and read content from a URL",
+  shortHint: "Call the webfetch tool to fetch and read content from a URL. Pass the 'url' to fetch. Use 'format' to choose markdown, text, or html output.",
   parameters: z.object({
     url: z.string().describe("The URL to fetch content from"),
     format: z

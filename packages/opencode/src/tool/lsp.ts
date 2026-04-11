@@ -22,6 +22,8 @@ const operations = [
 
 export const LspTool = Tool.define("lsp", {
   description: DESCRIPTION,
+  shortDescription: "Code intelligence: definitions, references, symbols, types",
+  shortHint: "Call the lsp tool to understand code in various programming languages. It provides code intelligence via Language Server Protocol. Pass 'operation' (goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation, incomingCalls, outgoingCalls), 'filePath', 'line', and 'character'. Call the lsp tool before modifying code to understand symbol definitions, references, types, and call hierarchies.",
   parameters: z.object({
     operation: z.enum(operations).describe("The LSP operation to perform"),
     filePath: z.string().describe("The absolute or relative path to the file"),
