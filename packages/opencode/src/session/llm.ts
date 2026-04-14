@@ -12,9 +12,10 @@ import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
-import { SystemPrompt, isGemma4, isSmallGemma4, buildGemma4SystemPrompt, getGemma4ModeIndicator } from "./system"
-import { toolsToSkillEntries, mergeSkillEntries, type SkillEntry } from "@/skill/prompt"
-import { Skill } from "@/skill"
+import { SystemPrompt, isGemma4, buildGemma4SystemPrompt, getGemma4ModeIndicator } from "./system"
+import { toolsToSkillEntries } from "@/skill/prompt"
+import { ToolRegistry } from "@/tool/registry"
+import { ModelID } from "@/provider/schema"
 import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
@@ -205,32 +206,26 @@ export namespace LLM {
     const tools = await resolveTools(input)
 
     // For Gemma 4 models, rebuild the system prompt using Gallery-style skill catalog.
-    // All tools are presented as skills with brief descriptions; the model loads
-    // full instructions on-demand via the skill tool (3-tier progressive disclosure).
+    // Only load_skill and run_intent are FC-declared tools; all others become skills
+    // listed in the system prompt catalog, accessed via load_skill → run_intent.
     if (isGemma4(input.model)) {
-      const isSmall = isSmallGemma4(input.model)
-      // Convert resolved tools to skill entries
-      const toolEntries = Object.entries(tools).map(([id, t]) => ({
-        id,
-        description: ((t as any).description as string) ?? id,
-        parameters: {},
-      }))
-      const toolSkills = toolsToSkillEntries(
-        isSmall
-          ? toolEntries.filter((t) => !t.id.includes("/") && t.id !== "lsp")
-          : toolEntries,
-      )
-      // Merge with file-based skills (SKILL.md); file-skills override on name collision
-      const fileSkills: SkillEntry[] = (await Skill.available(input.agent)).map((s) => ({
-        name: s.name,
-        description: s.description,
-        location: s.location,
-        source: "file" as const,
-      }))
-      const allSkills = mergeSkillEntries(toolSkills, fileSkills)
-      const hasLsp = toolEntries.some((t) => t.id === "lsp")
-      const hasMcp = toolEntries.some((t) => t.id.includes("/"))
-      const gemma4Prompt = buildGemma4SystemPrompt(allSkills, { hasLsp, hasMcp })
+      // Build skill catalog from ALL registered tools except the 2 FC-declared ones
+      const allToolDefs = await ToolRegistry.tools({
+        providerID: input.model.providerID,
+        modelID: ModelID.make(input.model.api.id),
+        agent: input.agent,
+      })
+      // Exclude FC tools and internal-only tools from the skill catalog
+      const excludeFromSkills = new Set(["load_skill", "run_intent", "skill", "invalid"])
+      const skillToolDefs = allToolDefs
+        .filter((t) => !excludeFromSkills.has(t.id))
+        .map((t) => ({
+          id: t.id,
+          description: t.description,
+          parameters: {},
+        }))
+      const allSkills = toolsToSkillEntries(skillToolDefs)
+      const gemma4Prompt = buildGemma4SystemPrompt(allSkills)
       const modeIndicator = getGemma4ModeIndicator(input.agent.name === "plan" ? "plan" : "build")
       // Rule 5: Adaptive thought efficiency via system instructions.
       // When thinking effort is "low", add instruction to reduce thinking tokens.

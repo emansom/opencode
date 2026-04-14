@@ -13,7 +13,7 @@ import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSch
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider/transform"
-import { SystemPrompt, isGemma4, isSmallGemma4 } from "./system"
+import { SystemPrompt, isGemma4 } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
@@ -386,22 +386,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             ),
         })
 
-        // Essential tools for small Gemma 4 models (E4B/E2B)
-        const gemma4EssentialTools = new Set([
-          // File operations
-          "bash", "read", "write", "edit", "multiedit", "apply_patch",
-          // Go AST tools (go_inspect, go_fix, and all go_* edit tools)
-          "go_inspect", "go_fix",
-          // Search & discovery
-          "glob", "grep", "ls",
-          // UI state management
-          "todowrite", "question", "plan_exit", "plan_enter", "task", "skill",
-        ])
-        // All go_* tools are essential for Gemma 4 (individual edit tools)
-        const isGemma4Essential = (id: string) =>
-          gemma4EssentialTools.has(id) || id.startsWith("go_")
         const useGemma4Concise = isGemma4(input.model)
-        const useGemma4Restricted = isSmallGemma4(input.model)
+        // Gemma 4: only load_skill and run_intent are sent to the API (Gallery alignment)
+        const gemma4SkillOnlyTools = new Set(["load_skill", "run_intent"])
 
         // Strip parameter descriptions and metadata from schemas for Gemma 4
         function stripSchemaForGemma4(schema: Record<string, any>): Record<string, any> {
@@ -426,8 +413,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           providerID: input.model.providerID,
           agent: input.agent,
         })) {
-          // Skip non-essential tools for small Gemma 4 models
-          if (useGemma4Restricted && !isGemma4Essential(item.id)) continue
+          // Gemma 4: only send load_skill and run_intent to the API
+          if (useGemma4Concise && !gemma4SkillOnlyTools.has(item.id)) continue
 
           let schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
           let description = item.description
@@ -489,6 +476,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         }
 
         for (const [key, item] of Object.entries(yield* mcp.tools())) {
+          // Gemma 4: skip all MCP tools — they become skills via run_intent
+          if (useGemma4Concise) continue
           const execute = item.execute
           if (!execute) continue
 

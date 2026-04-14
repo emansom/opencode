@@ -29,36 +29,20 @@ export function isSmallGemma4(model: Provider.Model): boolean {
 
 export function buildGemma4SystemPrompt(
   skills: SkillEntry[],
-  opts?: { hasLsp?: boolean; hasMcp?: boolean },
 ): string {
   const rules: string[] = []
 
-  if (opts?.hasLsp) {
-    rules.push("Always call the read tool and the lsp tool before editing. Understand the code first.")
-  } else {
-    rules.push("Always call the read tool before editing. Understand the code first.")
-  }
-  rules.push("Prefer the edit tool over the write tool for existing files.")
+  rules.push("Always load the read skill before editing. Understand the code first.")
+  rules.push("Prefer the edit skill over the write skill for existing files.")
   rules.push("Make minimum changes. Do not refactor unrelated code.")
   rules.push("Follow existing code style, naming conventions, and patterns.")
-  rules.push("Call the glob tool, grep tool, and read tool instead of bash for file operations.")
-  rules.push("Call multiple independent tools in parallel when possible.")
+  rules.push("Use the glob, grep, and read skills instead of bash for file operations.")
   rules.push("Never force-push, never commit secrets, never run destructive git commands.")
-  rules.push("Call the task tool to delegate complex subtasks to subagents.")
   rules.push("Be concise. Lead with the answer, not the reasoning.")
 
-  const sections: string[] = [
-    [
-      "Task tracking:",
-      "- Call the todowrite tool to create a task list at the start of every task.",
-      "- Call the todowrite tool to update todo status as you complete each step.",
-    ].join("\n"),
-  ]
-
   return buildGemma4SkillPrompt(skills, {
-    role: "You are an expert software engineer running inside OpenCode, an agentic code editor.\nYou work autonomously on programming tasks by using your tools.",
+    role: "You are an expert software engineer running inside OpenCode, an agentic code editor.\nYou work autonomously on programming tasks by using your skills.",
     rules,
-    sections,
   })
 }
 

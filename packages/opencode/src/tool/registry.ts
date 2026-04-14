@@ -11,6 +11,8 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillDescription, SkillTool } from "./skill"
+import { LoadSkillTool } from "./load-skill"
+import { RunIntentTool } from "./run-intent"
 import { Tool } from "./tool"
 import { Config } from "../config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -160,6 +162,8 @@ export namespace ToolRegistry {
             search: Tool.init(WebSearchTool),
             code: Tool.init(CodeSearchTool),
             skill: Tool.init(SkillTool),
+            loadSkill: Tool.init(LoadSkillTool),
+            runIntent: Tool.init(RunIntentTool),
             patch: Tool.init(ApplyPatchTool),
             goAstInspect: Tool.init(GoAstInspectTool),
             goFix: Tool.init(GoFixTool),
@@ -193,6 +197,8 @@ export namespace ToolRegistry {
               tool.search,
               tool.code,
               tool.skill,
+              tool.loadSkill,
+              tool.runIntent,
               tool.patch,
               ...goAstEditTools,
               tool.goAstInspect,

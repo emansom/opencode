@@ -109,15 +109,19 @@ export function buildGemma4SkillPrompt(
 
   lines.push(config?.role ?? "You are an expert software engineer. You work autonomously on programming tasks by using your tools.")
   lines.push("")
-  lines.push("For EVERY new task, you MUST execute these steps in order:")
+  lines.push("For EVERY new task, you MUST execute the following steps in exact order:")
   lines.push("")
-  lines.push("1. Find the most relevant skill from the following list:")
+  lines.push("1. First, find the most relevant skill from the following list:")
   lines.push("")
   lines.push(buildGemma4Catalog(skills))
   lines.push("")
-  lines.push("2. Use the skill tool to load the skill's full instructions.")
+  lines.push("After this step you MUST go to next step. You MUST NOT use `run_intent` at this step.")
   lines.push("")
-  lines.push("3. Follow the loaded instructions to complete the task using the appropriate tools.")
+  lines.push("2. Use the `load_skill` tool to load the skill's full instructions. You MUST NOT use `run_intent` at this step.")
+  lines.push("")
+  lines.push("3. Follow the skill's instructions exactly to complete the task.")
+  lines.push("")
+  lines.push("Do NOT call run_intent without loading the skill first.")
 
   if (config?.sections?.length) {
     for (const section of config.sections) {
@@ -143,7 +147,9 @@ export function buildGemma4SkillPrompt(
 
 /**
  * Generate skill activation content from a tool definition.
- * Returns formatted instructions for the skill tool response.
+ * Matches Gallery's loadSkill return format: YAML frontmatter + instructions body.
+ *
+ * Gallery reconstructs: "---\nname: ${name}\ndescription: ${desc}\n---\n\n${instructions}"
  */
 export function generateToolSkillContent(
   tool: ToolSkillSource,
@@ -151,38 +157,54 @@ export function generateToolSkillContent(
 ): string {
   const lines: string[] = []
 
+  // YAML frontmatter (matches Gallery's loadSkill return format)
+  lines.push("---")
+  lines.push(`name: ${tool.id}`)
+  lines.push(`description: ${truncateDescription(tool.description)}`)
+  lines.push("---")
+  lines.push("")
+
+  // Title + description
   lines.push(`# ${tool.id}`)
   lines.push("")
   lines.push(tool.description)
   lines.push("")
 
+  // Instructions section (Gallery SKILL.md format)
+  lines.push("## Instructions")
+  lines.push("")
+  lines.push("Call the `run_intent` tool with the following exact parameters:")
+  lines.push("")
+  lines.push(`- intent: ${tool.id}`)
+
+  // Parameter fields from schema
   const schema = tool.parameters as Record<string, unknown>
   const properties = schema.properties as Record<string, Record<string, unknown>> | undefined
   const required = new Set((schema.required as string[]) ?? [])
 
   if (properties && Object.keys(properties).length > 0) {
-    lines.push("## Parameters")
+    lines.push("- parameters: A JSON string with the following fields:")
     for (const [name, prop] of Object.entries(properties)) {
-      const req = required.has(name) ? "required" : "optional"
+      const req = required.has(name) ? "Required" : "Optional"
       const type = (prop.type as string) ?? "any"
       const desc = (prop.description as string) ?? ""
-      if (desc) {
-        lines.push(`- ${name} (${type}, ${req}): ${desc}`)
-      } else {
-        lines.push(`- ${name} (${type}, ${req})`)
-      }
+      lines.push(`  - ${name}: ${desc ? desc + " " : ""}${capitalize(type)}. ${req}.`)
     }
-    lines.push("")
   }
 
+  // Extra content (e.g. Go AST reference)
   if (opts?.extraContent) {
-    lines.push(opts.extraContent)
     lines.push("")
+    lines.push("## Reference")
+    lines.push("")
+    lines.push(opts.extraContent)
   }
-
-  lines.push(`Call the ${tool.id} tool with the parameters above.`)
 
   return lines.join("\n")
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 // ---------------------------------------------------------------------------
