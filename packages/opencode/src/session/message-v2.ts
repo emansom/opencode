@@ -13,6 +13,7 @@ import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
+import { isGemma4 } from "./system"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Effect } from "effect"
 
@@ -607,8 +608,28 @@ export namespace MessageV2 {
       return false
     })()
 
+    const gemma4 = isGemma4(model)
+
     const toModelOutput = (options: { toolCallId: string; input: unknown; output: unknown }) => {
       const output = options.output
+
+      // Gemma 4: wrap all tool results as {result, status} objects.
+      // Gallery/LiteRT-LM always use this format so the Jinja template renders
+      // proper FC format with unquoted keys and <|"|>-wrapped strings.
+      if (gemma4) {
+        if (typeof output === "string") {
+          return { type: "json", value: { result: output, status: "succeeded" } }
+        }
+        if (typeof output === "object") {
+          const obj = output as Record<string, unknown>
+          if ("result" in obj || "status" in obj) return { type: "json", value: obj }
+          const text = (obj as { text?: string }).text
+          if (typeof text === "string") return { type: "json", value: { result: text, status: "succeeded" } }
+          return { type: "json", value: { result: obj, status: "succeeded" } }
+        }
+        return { type: "json", value: { result: String(output), status: "succeeded" } }
+      }
+
       if (typeof output === "string") {
         return { type: "text", value: output }
       }
@@ -687,6 +708,13 @@ export namespace MessageV2 {
             })
           }
         }
+        // Gemma 4: reorder so media/file parts come before text parts.
+        // Gallery places images/audio before text for accurate last-token ordering.
+        if (gemma4 && userMessage.parts.length > 1) {
+          const fileParts = userMessage.parts.filter((p) => p.type === "file")
+          const otherParts = userMessage.parts.filter((p) => p.type !== "file")
+          userMessage.parts = [...fileParts, ...otherParts]
+        }
       }
 
       if (msg.info.role === "assistant") {
@@ -763,6 +791,17 @@ export namespace MessageV2 {
                   ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                   ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
                 })
+              } else if (gemma4) {
+                // Gemma 4: wrap errors as {error, status: "failed"} via output-available
+                assistantMessage.parts.push({
+                  type: ("tool-" + part.tool) as `tool-${string}`,
+                  state: "output-available",
+                  toolCallId: part.callID,
+                  input: part.state.input,
+                  output: { error: part.state.error, status: "failed" },
+                  ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+                  ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
+                })
               } else {
                 assistantMessage.parts.push({
                   type: ("tool-" + part.tool) as `tool-${string}`,
@@ -777,16 +816,30 @@ export namespace MessageV2 {
             }
             // Handle pending/running tool calls to prevent dangling tool_use blocks
             // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
-            if (part.state.status === "pending" || part.state.status === "running")
-              assistantMessage.parts.push({
-                type: ("tool-" + part.tool) as `tool-${string}`,
-                state: "output-error",
-                toolCallId: part.callID,
-                input: part.state.input,
-                errorText: "[Tool execution was interrupted]",
-                ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
-                ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
-              })
+            if (part.state.status === "pending" || part.state.status === "running") {
+              if (gemma4) {
+                // Gemma 4: wrap interrupted as {error, status: "failed"} via output-available
+                assistantMessage.parts.push({
+                  type: ("tool-" + part.tool) as `tool-${string}`,
+                  state: "output-available",
+                  toolCallId: part.callID,
+                  input: part.state.input,
+                  output: { error: "Tool execution was interrupted", status: "failed" },
+                  ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+                  ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
+                })
+              } else {
+                assistantMessage.parts.push({
+                  type: ("tool-" + part.tool) as `tool-${string}`,
+                  state: "output-error",
+                  toolCallId: part.callID,
+                  input: part.state.input,
+                  errorText: "[Tool execution was interrupted]",
+                  ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+                  ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
+                })
+              }
+            }
           }
           if (part.type === "reasoning") {
             assistantMessage.parts.push({
