@@ -988,3 +988,28 @@ export function generateGoAstSystemPrompt(): string {
 
   return sections.join("\n")
 }
+
+/**
+ * Generate skill activation content for a specific Go AST tool.
+ * Used by the skill tool when the model calls skill("go_edit") etc.
+ * Returns the full operation reference + examples for on-demand loading.
+ */
+export function generateGoAstSkillContent(toolId: string): string {
+  if (toolId === "go_inspect") {
+    return [
+      "## Go AST Inspect",
+      "",
+      "Returns comprehensive file structure: package, imports, functions with",
+      "signatures and body statements, types with fields, const/var declarations.",
+      "Use the output to understand targets for go_edit operations.",
+    ].join("\n")
+  }
+
+  // For go_edit and individual go_* tools, return the full reference
+  const sections: string[] = []
+  sections.push(generateQuickReference())
+  sections.push(generateGoAstReference())
+  sections.push(generateGoAstWorkflows())
+  sections.push(generateGolangSyntax())
+  return sections.join("\n")
+}

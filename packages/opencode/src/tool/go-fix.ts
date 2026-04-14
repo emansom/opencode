@@ -19,10 +19,6 @@ export const GoFixTool = Tool.define("go_fix", {
     "missing commas, and repairs other common syntax issues. " +
     "Use this ONLY when an edit tool fails with parse errors. Just pass the file path — " +
     "the tool figures out what to fix automatically. After fixing, retry the edit.",
-  shortDescription: "Auto-fix syntax errors in Go files that prevent AST parsing",
-  shortHint:
-    "Call go_fix when an edit tool fails with syntax/parse errors. Just pass filePath — " +
-    "it automatically detects and fixes common Go syntax errors. Then retry the edit.",
   parameters: z.object({
     filePath: z.string().describe("Absolute path to the .go file with syntax errors"),
   }),

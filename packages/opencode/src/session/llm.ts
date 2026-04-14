@@ -13,6 +13,8 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt, isGemma4, isSmallGemma4, buildGemma4SystemPrompt, getGemma4ModeIndicator } from "./system"
+import { toolsToSkillEntries, mergeSkillEntries, type SkillEntry } from "@/skill/prompt"
+import { Skill } from "@/skill"
 import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
@@ -202,26 +204,33 @@ export namespace LLM {
 
     const tools = await resolveTools(input)
 
-    // For Gemma 4 models, rebuild the system prompt with resolved tool information
+    // For Gemma 4 models, rebuild the system prompt using Gallery-style skill catalog.
+    // All tools are presented as skills with brief descriptions; the model loads
+    // full instructions on-demand via the skill tool (3-tier progressive disclosure).
     if (isGemma4(input.model)) {
+      const isSmall = isSmallGemma4(input.model)
+      // Convert resolved tools to skill entries
       const toolEntries = Object.entries(tools).map(([id, t]) => ({
         id,
-        description: (t as any).description as string | undefined,
-        shortHint: (t as any).shortHint as string | undefined,
+        description: ((t as any).description as string) ?? id,
+        parameters: {},
       }))
-      // Separate MCP tools (those with '/' in the ID) from built-in tools
-      // For small Gemma 4 models (E4B/E2B), exclude LSP and MCP tools from the system prompt
-      const isSmall = isSmallGemma4(input.model)
-      const builtinTools = toolEntries
-        .filter((t) => !t.id.includes("/"))
-        .filter((t) => !(isSmall && t.id === "lsp"))
-      const mcpToolMap: Record<string, { description?: string }> = {}
-      if (!isSmall) {
-        for (const t of toolEntries.filter((t) => t.id.includes("/"))) {
-          mcpToolMap[t.id] = { description: t.description }
-        }
-      }
-      const gemma4Prompt = buildGemma4SystemPrompt(builtinTools, mcpToolMap)
+      const toolSkills = toolsToSkillEntries(
+        isSmall
+          ? toolEntries.filter((t) => !t.id.includes("/") && t.id !== "lsp")
+          : toolEntries,
+      )
+      // Merge with file-based skills (SKILL.md); file-skills override on name collision
+      const fileSkills: SkillEntry[] = (await Skill.available(input.agent)).map((s) => ({
+        name: s.name,
+        description: s.description,
+        location: s.location,
+        source: "file" as const,
+      }))
+      const allSkills = mergeSkillEntries(toolSkills, fileSkills)
+      const hasLsp = toolEntries.some((t) => t.id === "lsp")
+      const hasMcp = toolEntries.some((t) => t.id.includes("/"))
+      const gemma4Prompt = buildGemma4SystemPrompt(allSkills, { hasLsp, hasMcp })
       const modeIndicator = getGemma4ModeIndicator(input.agent.name === "plan" ? "plan" : "build")
       // Rule 5: Adaptive thought efficiency via system instructions.
       // When thinking effort is "low", add instruction to reduce thinking tokens.

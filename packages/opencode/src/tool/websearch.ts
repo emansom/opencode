@@ -61,8 +61,6 @@ export const WebSearchTool = Tool.define("websearch", async () => {
     get description() {
       return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
     },
-    shortDescription: "Search the web for current information",
-    shortHint: "Call the websearch tool to search the web for current information. Pass a 'query' string. Use when you need recent documentation or answers beyond your training data.",
     parameters: Parameters,
     async execute(params, ctx) {
       await ctx.ask({

@@ -169,8 +169,6 @@ export const TaskTool = Tool.defineEffect(
 
     return {
       description: DESCRIPTION,
-      shortDescription: "Delegate a complex subtask to a subagent",
-      shortHint: "Call the task tool to delegate complex subtasks to a specialized subagent. Pass a 'description' and 'prompt' for what the subagent should do, and 'subagent_type' to choose the agent.",
       parameters,
       async execute(params: z.infer<typeof parameters>, ctx) {
         return Effect.runPromise(run(params, ctx))

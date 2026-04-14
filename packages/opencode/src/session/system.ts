@@ -15,9 +15,7 @@ import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
-import { existsSync, readdirSync } from "fs"
-import { join } from "path"
-import { generateGoAstSystemPrompt } from "@/provider/gemma4-go-ast-knowledge"
+import { buildGemma4SkillPrompt, type SkillEntry } from "@/skill/prompt"
 
 export function isGemma4(model: Provider.Model): boolean {
   const id = model.api.id.toLowerCase()
@@ -29,124 +27,39 @@ export function isSmallGemma4(model: Provider.Model): boolean {
   return isGemma4(model) && /gemma.?4.*(e[24]b|[24]b)/i.test(id)
 }
 
-function truncateDescription(desc: string): string {
-  const firstSentence = desc.split(/[.\n]/)[0].trim()
-  return firstSentence.length > 80 ? firstSentence.slice(0, 77) + "..." : firstSentence
-}
-
 export function buildGemma4SystemPrompt(
-  builtinTools: { id: string; description?: string; shortDescription?: string; shortHint?: string }[],
-  mcpTools: Record<string, { description?: string }>,
+  skills: SkillEntry[],
+  opts?: { hasLsp?: boolean; hasMcp?: boolean },
 ): string {
-  const lines: string[] = []
+  const rules: string[] = []
 
-  lines.push("You are an expert software engineer running inside OpenCode, an agentic code editor.")
-  lines.push("You work autonomously on programming tasks by using your tools.")
-  lines.push("")
-
-  lines.push("You operate in one of two modes:")
-  lines.push("- BUILD mode: Execute tasks autonomously. Use all tools to implement, test, and verify changes.")
-  lines.push("- PLAN mode: Form a plan without editing files. Only use read-only tools. Call the plan_exit tool when the plan is complete.")
-  lines.push("The current mode is indicated before each conversation turn.")
-  lines.push("")
-
-  lines.push("You have tools. Each item listed below is a tool you can call.")
-  lines.push("To accomplish tasks, call these tools by name with the required parameters.")
-  lines.push("Do not describe what you would do — call the tool and do it.")
-  lines.push("")
-
-  const hasLsp = builtinTools.some((t) => t.id === "lsp")
-  const hasMcp = Object.keys(mcpTools).length > 0
-
-  lines.push("Your tools:")
-  for (const tool of builtinTools) {
-    const hint = tool.shortHint ?? tool.shortDescription ?? truncateDescription(tool.description ?? "")
-    lines.push(`- ${tool.id}: ${hint}`)
-  }
-  lines.push("")
-
-  if (hasMcp) {
-    lines.push("Additional tools from MCP servers:")
-    for (const [id, tool] of Object.entries(mcpTools)) {
-      const desc = tool.description || "No description provided"
-      lines.push(`- ${id}: ${truncateDescription(desc)}`)
-    }
-    lines.push("")
-  }
-
-  lines.push("Task tracking:")
-  lines.push("- Call the todowrite tool to create a task list at the start of every task.")
-  lines.push("- Call the todowrite tool to update todo status (in_progress/completed) as you complete each step.")
-  lines.push("- The user sees your todo progress in the UI.")
-  lines.push("")
-
-  let step = 0
-  lines.push("Workflow:")
-  lines.push(`${++step}. Understand the task. Call the question tool if truly ambiguous.`)
-  lines.push(`${++step}. Call the todowrite tool to create todos listing your planned steps.`)
-  lines.push(`${++step}. Call the glob tool and grep tool to find relevant files and patterns.`)
-  lines.push(`${++step}. Call the read tool to read the files you need to understand.`)
-  if (hasLsp) {
-    lines.push(`${++step}. Call the lsp tool to understand the code: find symbol definitions, references, types, and call hierarchies before making changes.`)
-  }
-  lines.push(`${++step}. Call the edit tool for targeted changes, the write tool for new files, the bash tool for commands.`)
-  lines.push(`${++step}. Call the bash tool to run tests, lint, or typecheck to verify changes.`)
-  lines.push(`${++step}. If something fails, diagnose the error and fix it. Do not give up.`)
-  lines.push(`${++step}. Call the todowrite tool to update todos as you complete each step.`)
-  lines.push(`${++step}. Report concisely what you did.`)
-  lines.push("")
-
-  lines.push("Rules:")
-  if (hasLsp) {
-    lines.push("- Always call the read tool and the lsp tool before calling the edit tool. Understand the code before modifying it.")
+  if (opts?.hasLsp) {
+    rules.push("Always call the read tool and the lsp tool before editing. Understand the code first.")
   } else {
-    lines.push("- Always call the read tool before calling the edit tool. Understand the code before modifying it.")
+    rules.push("Always call the read tool before editing. Understand the code first.")
   }
-  lines.push("- Prefer the edit tool over the write tool for existing files. Only create files when necessary.")
-  lines.push("- Make minimum changes. Do not refactor unrelated code.")
-  lines.push("- Follow existing code style, naming conventions, and patterns.")
-  lines.push("- Call the glob tool, grep tool, and read tool instead of the bash tool for file operations.")
-  lines.push("- Call multiple independent tools in parallel when possible.")
-  lines.push("- Never force-push, never commit secrets, never run destructive git commands via the bash tool.")
-  if (hasLsp) {
-    lines.push("- Call the lsp tool for code navigation: find definitions, references, and symbols.")
-  }
-  lines.push("- Call the task tool to delegate complex subtasks to subagents.")
-  lines.push("- Be concise. Lead with the answer, not the reasoning.")
+  rules.push("Prefer the edit tool over the write tool for existing files.")
+  rules.push("Make minimum changes. Do not refactor unrelated code.")
+  rules.push("Follow existing code style, naming conventions, and patterns.")
+  rules.push("Call the glob tool, grep tool, and read tool instead of bash for file operations.")
+  rules.push("Call multiple independent tools in parallel when possible.")
+  rules.push("Never force-push, never commit secrets, never run destructive git commands.")
+  rules.push("Call the task tool to delegate complex subtasks to subagents.")
+  rules.push("Be concise. Lead with the answer, not the reasoning.")
 
-  // Append Go AST knowledge docs when Go files are present in the workspace.
-  // Check go.mod at worktree root, working directory, and one level deep.
-  // Also check for .go files in the working directory.
-  if (detectGoProject()) {
-    lines.push("")
-    lines.push(generateGoAstSystemPrompt())
-  }
+  const sections: string[] = [
+    [
+      "Task tracking:",
+      "- Call the todowrite tool to create a task list at the start of every task.",
+      "- Call the todowrite tool to update todo status as you complete each step.",
+    ].join("\n"),
+  ]
 
-  return lines.join("\n")
-}
-
-function hasGoFilesInDir(dir: string, depth: number): boolean {
-  if (depth < 0) return false
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "vendor") continue
-      if (entry.isFile() && (entry.name === "go.mod" || entry.name.endsWith(".go"))) return true
-      if (entry.isDirectory() && depth > 0 && hasGoFilesInDir(join(dir, entry.name), depth - 1)) return true
-    }
-  } catch {
-    // Permission denied or similar — skip
-  }
-  return false
-}
-
-function detectGoProject(): boolean {
-  // Check working directory and worktree for go.mod or .go files,
-  // scanning up to 3 levels deep (handles monorepos).
-  if (hasGoFilesInDir(Instance.directory, 3)) return true
-  // Also check worktree root if different, but skip "/" (non-git projects)
-  const wt = Instance.worktree
-  if (wt !== Instance.directory && wt !== "/" && hasGoFilesInDir(wt, 3)) return true
-  return false
+  return buildGemma4SkillPrompt(skills, {
+    role: "You are an expert software engineer running inside OpenCode, an agentic code editor.\nYou work autonomously on programming tasks by using your tools.",
+    rules,
+    sections,
+  })
 }
 
 export function getGemma4ModeIndicator(mode: "plan" | "build"): string {

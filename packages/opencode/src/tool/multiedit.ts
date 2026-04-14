@@ -7,8 +7,6 @@ import { Instance } from "../project/instance"
 
 export const MultiEditTool = Tool.define("multiedit", {
   description: DESCRIPTION,
-  shortDescription: "Apply multiple text replacements on one file",
-  shortHint: "Call the multiedit tool to apply multiple sequential text replacements on one file. Pass 'filePath' and an 'edits' array of {oldString, newString} objects.",
   parameters: z.object({
     filePath: z.string().describe("The absolute path to the file to modify"),
     edits: z

@@ -21,8 +21,6 @@ const PatchParams = z.object({
 
 export const ApplyPatchTool = Tool.define("apply_patch", {
   description: DESCRIPTION,
-  shortDescription: "Apply unified diff patches across multiple files",
-  shortHint: "Call the apply_patch tool to apply unified diff patches across multiple files. Pass the full patch text as 'patchText'.",
   parameters: PatchParams,
   async execute(params, ctx) {
     if (!params.patchText) {

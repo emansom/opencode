@@ -8,9 +8,6 @@ import { execGoAst } from "./go-ast-exec"
 export const GoAstInspectTool = Tool.define("go_inspect", {
   description:
     "Inspect the AST structure of a Go source file. Returns the package name, imports, types (structs with fields and tags, interfaces with methods and embeds, named types, aliases), functions (with signatures, parameters, returns, and statement-level body info), constants, variables, build constraints, and generate directives. Use this tool before editing to understand the file structure and identify correct targets.",
-  shortDescription: "Inspect the AST structure of a Go source file",
-  shortHint:
-    "Call go_inspect to understand a Go file's structure before editing. Pass 'filePath'. Returns package name, imports, functions with signatures, types with fields, and variables.",
   parameters: z.object({
     filePath: z.string().describe("Absolute path to the .go file"),
   }),

@@ -19,8 +19,6 @@ const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
 export const WriteTool = Tool.define("write", {
   description: DESCRIPTION,
-  shortDescription: "Create a new file or fully rewrite an existing file",
-  shortHint: "Call the write tool to create a new file or fully rewrite an existing one. Pass 'filePath' and 'content'. Only use when creating new files; prefer the edit tool for changes.",
   parameters: z.object({
     content: z.string().describe("The content to write to the file"),
     filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),

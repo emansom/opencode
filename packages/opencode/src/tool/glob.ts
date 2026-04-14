@@ -9,8 +9,6 @@ import { assertExternalDirectory } from "./external-directory"
 
 export const GlobTool = Tool.define("glob", {
   description: DESCRIPTION,
-  shortDescription: "Find files matching a glob pattern like **/*.ts",
-  shortHint: "Call the glob tool to find files by pattern. Pass a glob 'pattern' like **/*.ts or src/**/*.py. Optionally pass 'path' to limit the search directory.",
   parameters: z.object({
     pattern: z.string().describe("The glob pattern to match files against"),
     path: z

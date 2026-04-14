@@ -36,8 +36,6 @@ function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
 
 export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
-  shortDescription: "Replace exact text in a file with new text",
-  shortHint: "Call the edit tool to replace exact text in a file. Pass 'filePath', 'oldString' (text to find), and 'newString' (replacement). Set 'replaceAll' to true to replace all occurrences. This is the preferred tool for modifying existing files.",
   parameters: z.object({
     filePath: z.string().describe("The absolute path to the file to modify"),
     oldString: z.string().describe("The text to replace"),

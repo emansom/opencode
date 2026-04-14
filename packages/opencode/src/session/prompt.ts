@@ -433,7 +433,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let description = item.description
 
           if (useGemma4Concise) {
-            description = item.shortDescription ?? (description?.split(/[.\n]/)[0]?.trim().slice(0, 80) || "")
+            description = description?.split(/[.\n]/)[0]?.trim().slice(0, 80) || ""
             schema = stripSchemaForGemma4(schema)
           }
 
@@ -485,8 +485,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               )
             },
           })
-          // Attach shortHint for Gemma 4 system prompt builder (not used by AI SDK)
-          if (item.shortHint) (t as any).shortHint = item.shortHint
           tools[item.id] = t
         }
 

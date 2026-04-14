@@ -6,6 +6,8 @@ import { Tool } from "./tool"
 import { Skill } from "../skill"
 import { Ripgrep } from "../file/ripgrep"
 import { iife } from "@/util/iife"
+import { ToolRegistry } from "./registry"
+import { generateToolSkillContent, type ToolSkillSource } from "../skill/prompt"
 
 const Parameters = z.object({
   name: z.string().describe("The name of the skill from available_skills"),
@@ -34,15 +36,52 @@ export const SkillTool = Tool.define("skill", async () => {
 
   return {
     description,
-    shortDescription: "Load a specialized skill for domain-specific work",
-    shortHint: "Call the skill tool to load a specialized skill. Pass the skill 'name' to activate domain-specific instructions.",
     parameters: Parameters,
     async execute(params: z.infer<typeof Parameters>, ctx) {
       const skill = await Skill.get(params.name)
 
       if (!skill) {
+        // Try generating skill content from tool definition (Tier 2 activation).
+        // When the model calls skill("read"), generate instructions from the
+        // tool's definition: full description, parameter schema, usage guidance.
+        const toolDefs = await ToolRegistry.tools({
+          providerID: (ctx.extra?.model as any)?.providerID ?? ("" as any),
+          modelID: ((ctx.extra?.model as any)?.api?.id ?? "") as any,
+          agent: { name: ctx.agent, permission: [] } as any,
+        })
+        const toolDef = toolDefs.find((t) => t.id === params.name)
+        if (toolDef) {
+          const schema = z.toJSONSchema(toolDef.parameters)
+          const source: ToolSkillSource = {
+            id: toolDef.id,
+            description: toolDef.description,
+            parameters: schema as Record<string, unknown>,
+          }
+          // For Go AST tools, include the operation reference
+          let extraContent: string | undefined
+          if (toolDef.id.startsWith("go_")) {
+            try {
+              const { generateGoAstSkillContent } = await import("../provider/gemma4-go-ast-knowledge")
+              extraContent = generateGoAstSkillContent(toolDef.id)
+            } catch {
+              // Go AST knowledge not available — skip
+            }
+          }
+          const content = generateToolSkillContent(source, { extraContent })
+          return {
+            title: `Loaded skill: ${params.name}`,
+            output: [
+              `<skill_content name="${params.name}">`,
+              content,
+              `</skill_content>`,
+            ].join("\n"),
+            metadata: { name: params.name, dir: process.cwd() },
+          }
+        }
+
         const available = await Skill.all().then((x) => x.map((skill) => skill.name).join(", "))
-        throw new Error(`Skill "${params.name}" not found. Available skills: ${available || "none"}`)
+        const toolIds = toolDefs.map((t) => t.id).join(", ")
+        throw new Error(`Skill "${params.name}" not found. Available skills: ${available || "none"}. Available tools: ${toolIds || "none"}`)
       }
 
       await ctx.ask({

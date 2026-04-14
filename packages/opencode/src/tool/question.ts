@@ -19,8 +19,6 @@ export const QuestionTool = Tool.defineEffect<typeof parameters, Metadata, Quest
 
     return {
       description: DESCRIPTION,
-      shortDescription: "Ask the user a question when genuinely ambiguous",
-      shortHint: "Call the question tool when you need user input. Pass a 'questions' array with question text and answer options. Only use when genuinely ambiguous.",
       parameters,
       async execute(params: z.infer<typeof parameters>, ctx: Tool.Context<Metadata>) {
         const answers = await question
