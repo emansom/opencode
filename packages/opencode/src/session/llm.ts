@@ -12,9 +12,9 @@ import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
-import { SystemPrompt, isGemma4, buildGemma4SystemPrompt, getGemma4ModeIndicator } from "./system"
+import { SystemPrompt, buildSkillSystemPrompt, getModeIndicator } from "./system"
 import { toolsToSkillEntries } from "@/skill/prompt"
-import { ToolRegistry } from "@/tool/registry"
+import { SkillRegistry } from "@/tool/registry"
 import { ModelID } from "@/provider/schema"
 import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
@@ -205,37 +205,43 @@ export namespace LLM {
 
     const tools = await resolveTools(input)
 
-    // For Gemma 4 models, rebuild the system prompt using Gallery-style skill catalog.
-    // Only load_skill and run_intent are FC-declared tools; all others become skills
+    // Build skill catalog from SkillRegistry for all models.
+    // Only load_skill and run_intent are FC-declared tools; all others are skills
     // listed in the system prompt catalog, accessed via load_skill → run_intent.
-    if (isGemma4(input.model)) {
-      // Build skill catalog from ALL registered tools except the 2 FC-declared ones
-      const allToolDefs = await ToolRegistry.tools({
+    {
+      const allSkillDefs = await SkillRegistry.skills({
         providerID: input.model.providerID,
         modelID: ModelID.make(input.model.api.id),
         agent: input.agent,
       })
-      // Exclude FC tools and internal-only tools from the skill catalog
-      const excludeFromSkills = new Set(["load_skill", "run_intent", "skill", "invalid"])
-      const skillToolDefs = allToolDefs
-        .filter((t) => !excludeFromSkills.has(t.id))
-        .map((t) => ({
-          id: t.id,
-          description: t.description,
-          parameters: {},
-        }))
-      const allSkills = toolsToSkillEntries(skillToolDefs)
-      const gemma4Prompt = buildGemma4SystemPrompt(allSkills)
-      const modeIndicator = getGemma4ModeIndicator(input.agent.name === "plan" ? "plan" : "build")
-      // Rule 5: Adaptive thought efficiency via system instructions.
-      // When thinking effort is "low", add instruction to reduce thinking tokens.
+      const catalogDefs = allSkillDefs.map((t) => ({
+        id: t.id,
+        description: t.description,
+        parameters: {},
+      }))
+      const allSkills = toolsToSkillEntries(catalogDefs)
+      const skillPrompt = buildSkillSystemPrompt(allSkills)
+      const modeIndicator = getModeIndicator(input.agent.name === "plan" ? "plan" : "build")
+
+      // Adaptive thought efficiency: reduce thinking tokens for "low" variant.
       const variantName = input.user.model.variant?.toLowerCase() ?? ""
       const thinkingEffortInstruction = variantName === "low"
         ? "\n\nKeep your internal reasoning brief and focused. Avoid restating the problem. Jump directly to the solution approach."
         : ""
-      // Replace the system prompt with the Gemma 4-specific one
+
+      // Replace the system prompt with skill catalog prompt
       system.length = 0
-      system.push(gemma4Prompt + thinkingEffortInstruction + "\n\n" + modeIndicator)
+      system.push(
+        [
+          skillPrompt,
+          thinkingEffortInstruction,
+          modeIndicator,
+          ...(input.agent.prompt ? [input.agent.prompt] : []),
+          ...input.system.filter(Boolean),
+          ...(input.user.system ? [input.user.system] : []),
+        ].filter(Boolean).join("\n\n"),
+      )
+
       // Rebuild messages with new system prompt
       if (!isOpenaiOauth) {
         messages.length = 0
@@ -245,10 +251,8 @@ export namespace LLM {
         )
       }
 
-      // Gemma 4 reasoning control (Rules 1-2):
       // Strip reasoning from completed prior assistant turns.
-      // Preserve reasoning in the last assistant turn if it contains tool calls
-      // (active tool-calling turn — the model needs its reasoning chain).
+      // Preserve reasoning in the last assistant turn if it contains tool calls.
       stripReasoningFromCompletedTurns(messages)
     }
 
@@ -383,20 +387,21 @@ export namespace LLM {
             toolName: lower,
           }
         }
+        // Redirect unknown tools to run_intent — it returns "Tool not found" for unknown intents
         return {
           ...failed.toolCall,
           input: JSON.stringify({
-            tool: failed.toolCall.toolName,
-            error: failed.error.message,
+            intent: failed.toolCall.toolName,
+            parameters: JSON.stringify({ _error: failed.error.message }),
           }),
-          toolName: "invalid",
+          toolName: "run_intent",
         }
       },
       temperature: params.temperature,
       topP: params.topP,
       topK: params.topK,
       providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-      activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
+      activeTools: Object.keys(tools),
       tools,
       toolChoice: input.toolChoice,
       maxOutputTokens: params.maxOutputTokens,
@@ -465,17 +470,12 @@ export namespace LLM {
   }
 
   /**
-   * Gemma 4 reasoning control (Rules 1-2 from Google's prompt formatting guide).
-   *
-   * Rule 1: Strip reasoning/thinking content from completed prior assistant turns
+   * Strip reasoning/thinking content from completed prior assistant turns
    * to prevent context bloat and degraded model performance.
    *
-   * Rule 2: Preserve reasoning in the last assistant turn if it contains tool calls
+   * Preserve reasoning in the last assistant turn if it contains tool calls
    * (active tool-calling turn) — the model needs its reasoning chain for deciding
    * subsequent tool calls within the same logical turn.
-   *
-   * A turn is "completed" if it's not the last assistant message, or if it's the
-   * last assistant message without pending tool calls.
    */
   function stripReasoningFromCompletedTurns(messages: ModelMessage[]): void {
     // Find the last assistant message index

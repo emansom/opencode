@@ -3,7 +3,14 @@ import path from "path"
 import fs from "fs/promises"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
-import { ToolRegistry } from "../../src/tool/registry"
+import { ToolRegistry, SkillRegistry } from "../../src/tool/registry"
+import { ModelID, ProviderID } from "../../src/provider/schema"
+
+const skillInput = {
+  providerID: ProviderID.make("test"),
+  modelID: ModelID.make("test-model"),
+  agent: { name: "build", permission: [] } as any,
+}
 
 afterEach(async () => {
   await Instance.disposeAll()
@@ -38,8 +45,15 @@ describe("tool.registry", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        // ToolRegistry.ids() only returns load_skill and run_intent
         const ids = await ToolRegistry.ids()
-        expect(ids).toContain("hello")
+        expect(ids).toContain("load_skill")
+        expect(ids).toContain("run_intent")
+        expect(ids).not.toContain("hello")
+
+        // Custom tools appear as skills
+        const skills = await SkillRegistry.skills(skillInput)
+        expect(skills.map((s) => s.id)).toContain("hello")
       },
     })
   })
@@ -73,7 +87,12 @@ describe("tool.registry", () => {
       directory: tmp.path,
       fn: async () => {
         const ids = await ToolRegistry.ids()
-        expect(ids).toContain("hello")
+        expect(ids).toContain("load_skill")
+        expect(ids).toContain("run_intent")
+
+        // Custom tools appear as skills
+        const skills = await SkillRegistry.skills(skillInput)
+        expect(skills.map((s) => s.id)).toContain("hello")
       },
     })
   })
@@ -149,8 +168,9 @@ describe("tool.registry", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        const ids = await ToolRegistry.ids()
-        expect(ids).toContain("cowsay")
+        // Custom tools with external deps appear as skills
+        const skills = await SkillRegistry.skills(skillInput)
+        expect(skills.map((s) => s.id)).toContain("cowsay")
       },
     })
   })

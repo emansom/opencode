@@ -722,9 +722,9 @@ it.live(
           const ready = defer<void>()
           const aborted = defer<void>()
           const registry = yield* ToolRegistry.Service
-          const { task } = yield* registry.named()
+          const task = (yield* registry.getSkill("task", { providerID: ref.providerID, modelID: ref.modelID, agent: { name: "build", permission: [] } as any }))!
           const original = task.execute
-          task.execute = async (_args, ctx) => {
+          task.execute = async (_args: any, ctx: any) => {
             ready.resolve()
             ctx.abort.addEventListener("abort", () => aborted.resolve(), { once: true })
             await new Promise<void>(() => {})
@@ -1399,7 +1399,7 @@ it.live(
       (dir) =>
         Effect.gen(function* () {
           const registry = yield* ToolRegistry.Service
-          const { read } = yield* registry.named()
+          const read = (yield* registry.getSkill("read", { providerID: ref.providerID, modelID: ref.modelID, agent: { name: "build", permission: [] } as any }))!
           const { ready, aborted, restore } = hangUntilAborted(read)
           yield* restore
 
@@ -1445,7 +1445,7 @@ it.live(
       (dir) =>
         Effect.gen(function* () {
           const registry = yield* ToolRegistry.Service
-          const { read } = yield* registry.named()
+          const read = (yield* registry.getSkill("read", { providerID: ref.providerID, modelID: ref.modelID, agent: { name: "build", permission: [] } as any }))!
           const { ready, aborted, restore } = hangUntilAborted(read)
           yield* restore
 

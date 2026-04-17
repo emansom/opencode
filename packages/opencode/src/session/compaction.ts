@@ -19,7 +19,6 @@ import { Effect, Layer, ServiceMap } from "effect"
 import { makeRuntime } from "@/effect/run-service"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow } from "./overflow"
-import { isGemma4 } from "./system"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
@@ -35,7 +34,7 @@ export namespace SessionCompaction {
 
   export const PRUNE_MINIMUM = 20_000
   export const PRUNE_PROTECT = 40_000
-  const PRUNE_PROTECTED_TOOLS = ["skill"]
+  const PRUNE_PROTECTED_TOOLS = ["load_skill", "skill"]
 
   export interface Interface {
     readonly isOverflow: (input: {
@@ -217,14 +216,9 @@ When constructing the summary, try to stick to this template:
 [Construct a structured list of relevant files that have been read, edited, or created that pertain to the task at hand. If all the files in a directory are relevant, include the path to the directory.]
 ---`
 
-        // Rule 3: For Gemma 4, add reasoning summary instruction to capture key
-        // conclusions from thinking blocks. The summary is injected as regular text
-        // in subsequent turns (not inside <|channel> tokens).
-        const gemma4ReasoningPrompt = isGemma4(model)
-          ? `\n\nIMPORTANT: The conversation may contain the model's internal reasoning/thinking blocks. Extract the key conclusions and decisions from these reasoning blocks and include them under a "## Previous reasoning summary" section. Do not include raw thinking tokens or channel markers — summarize the reasoning as plain text. Focus on decisions made, approaches chosen, and conclusions reached that are relevant for continuing the work.`
-          : ""
+        const reasoningPrompt = `\n\nIMPORTANT: The conversation may contain the model's internal reasoning/thinking blocks. Extract the key conclusions and decisions from these reasoning blocks and include them under a "## Previous reasoning summary" section. Do not include raw thinking tokens or channel markers — summarize the reasoning as plain text. Focus on decisions made, approaches chosen, and conclusions reached that are relevant for continuing the work.`
 
-        const prompt = compacting.prompt ?? [defaultPrompt + gemma4ReasoningPrompt, ...compacting.context].join("\n\n")
+        const prompt = compacting.prompt ?? [defaultPrompt + reasoningPrompt, ...compacting.context].join("\n\n")
         const msgs = structuredClone(messages)
         yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
         const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, { stripMedia: true })

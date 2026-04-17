@@ -1,17 +1,13 @@
 /**
  * Skill Prompt Library
  *
- * Builds skill catalog prompts compatible with:
- * - Agent Skills spec (https://agentskills.io/specification) — XML format
- * - Gallery/LiteRT-LM Gemma 4 variant — plain text format with 3-step flow
+ * Skill Prompt Library
  *
- * Inspired by the skills-ref reference implementation:
- * https://github.com/agentskills/agentskills/tree/main/skills-ref
+ * Builds skill catalog prompts and activation content for the universal
+ * skill-only architecture (load_skill + run_intent).
  *
- * Implements 3-tier progressive disclosure (per spec):
- * Tier 1 — Catalog: brief name:description in system prompt (~50-100 tokens/skill)
- * Tier 2 — Activation: full instructions loaded on-demand via skill tool (<5000 tokens)
- * Tier 3 — Resources: supporting files loaded via file-read (existing behavior)
+ * Tier 1 — Catalog: brief name:description in system prompt
+ * Tier 2 — Activation: full instructions loaded on-demand via load_skill
  */
 
 // ---------------------------------------------------------------------------
@@ -37,7 +33,7 @@ export interface SkillEntry {
 }
 
 /** Format variants for the skill catalog. */
-export type SkillCatalogFormat = "xml" | "gemma4"
+export type SkillCatalogFormat = "xml" | "plain"
 
 /** Tool definition used to generate a tool-skill. */
 export interface ToolSkillSource {
@@ -56,7 +52,7 @@ export interface ToolSkillSource {
  * XML format (official spec):
  *   <available_skills><skill><name>...</name>...</skill></available_skills>
  *
- * Gemma 4 format (Gallery/LiteRT-LM):
+ * Plain format:
  *   - name: description
  */
 export function buildSkillCatalog(
@@ -66,7 +62,7 @@ export function buildSkillCatalog(
   if (format === "xml") {
     return buildXmlCatalog(skills)
   }
-  return buildGemma4Catalog(skills)
+  return buildPlainCatalog(skills)
 }
 
 function buildXmlCatalog(skills: SkillEntry[]): string {
@@ -80,12 +76,12 @@ function buildXmlCatalog(skills: SkillEntry[]): string {
   return `<available_skills>\n${entries.join("\n")}\n</available_skills>`
 }
 
-function buildGemma4Catalog(skills: SkillEntry[]): string {
+function buildPlainCatalog(skills: SkillEntry[]): string {
   return skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")
 }
 
-/** Configuration for the Gemma 4 system prompt. */
-export interface Gemma4PromptConfig {
+/** Configuration for the skill-based system prompt. */
+export interface SkillPromptConfig {
   /** Role/identity line. Defaults to a generic agentic assistant. */
   role?: string
   /** Rules to include after the 3-step flow. Rendered as a bullet list. */
@@ -95,15 +91,12 @@ export interface Gemma4PromptConfig {
 }
 
 /**
- * Build the full Gemma 4 system prompt with skill catalog.
- * Matches Gallery's mandatory 3-step flow pattern.
- *
- * The prompt structure is generic — tool-specific rules and identity
- * are supplied by the caller via `config`.
+ * Build the system prompt with skill catalog and 3-step flow.
+ * The model must: find skill → load_skill → run_intent.
  */
-export function buildGemma4SkillPrompt(
+export function buildSkillPrompt(
   skills: SkillEntry[],
-  config?: Gemma4PromptConfig,
+  config?: SkillPromptConfig,
 ): string {
   const lines: string[] = []
 
@@ -113,7 +106,7 @@ export function buildGemma4SkillPrompt(
   lines.push("")
   lines.push("1. First, find the most relevant skill from the following list:")
   lines.push("")
-  lines.push(buildGemma4Catalog(skills))
+  lines.push(buildPlainCatalog(skills))
   lines.push("")
   lines.push("After this step you MUST go to next step. You MUST NOT use `run_intent` at this step.")
   lines.push("")

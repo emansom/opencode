@@ -13,7 +13,6 @@ import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
-import { isGemma4 } from "./system"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Effect } from "effect"
 
@@ -608,58 +607,49 @@ export namespace MessageV2 {
       return false
     })()
 
-    const gemma4 = isGemma4(model)
-
     const toModelOutput = (options: { toolCallId: string; input: unknown; output: unknown }) => {
       const output = options.output
 
-      // Gemma 4: wrap all tool results as {result, status} objects.
-      // Gallery/LiteRT-LM always use this format so the Jinja template renders
-      // proper FC format with unquoted keys and <|"|>-wrapped strings.
-      if (gemma4) {
-        if (typeof output === "string") {
-          return { type: "json", value: { result: output, status: "succeeded" } }
-        }
-        if (typeof output === "object") {
-          const obj = output as Record<string, unknown>
-          if ("result" in obj || "status" in obj) return { type: "json", value: obj }
-          const text = (obj as { text?: string }).text
-          if (typeof text === "string") return { type: "json", value: { result: text, status: "succeeded" } }
-          return { type: "json", value: { result: obj, status: "succeeded" } }
-        }
-        return { type: "json", value: { result: String(output), status: "succeeded" } }
-      }
-
+      // Wrap all tool results as {result, status} objects.
+      // This format ensures consistent tool result rendering across all providers.
       if (typeof output === "string") {
-        return { type: "text", value: output }
+        return { type: "json", value: { result: output, status: "succeeded" } }
       }
 
       if (typeof output === "object") {
-        const outputObject = output as {
-          text: string
+        const obj = output as Record<string, unknown>
+        if ("result" in obj || "status" in obj) return { type: "json", value: obj }
+
+        // Preserve inline attachments (images, PDFs) as content parts
+        const outputObject = obj as {
+          text?: string
           attachments?: Array<{ mime: string; url: string }>
         }
         const attachments = (outputObject.attachments ?? []).filter((attachment) => {
           return attachment.url.startsWith("data:") && attachment.url.includes(",")
         })
-
-        return {
-          type: "content",
-          value: [
-            { type: "text", text: outputObject.text },
-            ...attachments.map((attachment) => ({
-              type: "media",
-              mediaType: attachment.mime,
-              data: iife(() => {
-                const commaIndex = attachment.url.indexOf(",")
-                return commaIndex === -1 ? attachment.url : attachment.url.slice(commaIndex + 1)
-              }),
-            })),
-          ],
+        if (attachments.length > 0) {
+          return {
+            type: "content",
+            value: [
+              { type: "text", text: outputObject.text ?? "" },
+              ...attachments.map((attachment) => ({
+                type: "media",
+                mediaType: attachment.mime,
+                data: iife(() => {
+                  const commaIndex = attachment.url.indexOf(",")
+                  return commaIndex === -1 ? attachment.url : attachment.url.slice(commaIndex + 1)
+                }),
+              })),
+            ],
+          }
         }
-      }
 
-      return { type: "json", value: output as never }
+        const text = outputObject.text
+        if (typeof text === "string") return { type: "json", value: { result: text, status: "succeeded" } }
+        return { type: "json", value: { result: obj, status: "succeeded" } }
+      }
+      return { type: "json", value: { result: String(output), status: "succeeded" } }
     }
 
     for (const msg of input) {
@@ -708,9 +698,8 @@ export namespace MessageV2 {
             })
           }
         }
-        // Gemma 4: reorder so media/file parts come before text parts.
-        // Gallery places images/audio before text for accurate last-token ordering.
-        if (gemma4 && userMessage.parts.length > 1) {
+        // Reorder so media/file parts come before text parts.
+        if (userMessage.parts.length > 1) {
           const fileParts = userMessage.parts.filter((p) => p.type === "file")
           const otherParts = userMessage.parts.filter((p) => p.type !== "file")
           userMessage.parts = [...fileParts, ...otherParts]
@@ -791,8 +780,8 @@ export namespace MessageV2 {
                   ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                   ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
                 })
-              } else if (gemma4) {
-                // Gemma 4: wrap errors as {error, status: "failed"} via output-available
+              } else {
+                // Wrap errors as {error, status: "failed"} via output-available
                 assistantMessage.parts.push({
                   type: ("tool-" + part.tool) as `tool-${string}`,
                   state: "output-available",
@@ -802,43 +791,21 @@ export namespace MessageV2 {
                   ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                   ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
                 })
-              } else {
-                assistantMessage.parts.push({
-                  type: ("tool-" + part.tool) as `tool-${string}`,
-                  state: "output-error",
-                  toolCallId: part.callID,
-                  input: part.state.input,
-                  errorText: part.state.error,
-                  ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
-                  ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
-                })
               }
             }
             // Handle pending/running tool calls to prevent dangling tool_use blocks
             // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
             if (part.state.status === "pending" || part.state.status === "running") {
-              if (gemma4) {
-                // Gemma 4: wrap interrupted as {error, status: "failed"} via output-available
-                assistantMessage.parts.push({
-                  type: ("tool-" + part.tool) as `tool-${string}`,
-                  state: "output-available",
-                  toolCallId: part.callID,
-                  input: part.state.input,
-                  output: { error: "Tool execution was interrupted", status: "failed" },
-                  ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
-                  ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
-                })
-              } else {
-                assistantMessage.parts.push({
-                  type: ("tool-" + part.tool) as `tool-${string}`,
-                  state: "output-error",
-                  toolCallId: part.callID,
-                  input: part.state.input,
-                  errorText: "[Tool execution was interrupted]",
-                  ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
-                  ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
-                })
-              }
+              // Wrap interrupted tools as {error, status: "failed"} via output-available
+              assistantMessage.parts.push({
+                type: ("tool-" + part.tool) as `tool-${string}`,
+                state: "output-available",
+                toolCallId: part.callID,
+                input: part.state.input,
+                output: { error: "Tool execution was interrupted", status: "failed" },
+                ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+                ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
+              })
             }
           }
           if (part.type === "reasoning") {
