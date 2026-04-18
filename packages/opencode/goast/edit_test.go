@@ -1018,3 +1018,185 @@ func TestGofmtPreservation(t *testing.T) {
 		t.Errorf("expected gofmt'd output, got:\n%s", result.Content)
 	}
 }
+
+// ===== Category 11: Structural Replacement =====
+
+func TestReplaceBody(t *testing.T) {
+	src := "package test\nfunc Foo() int {\n\treturn 1\n}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "replace_body",
+		Target: "Foo",
+		Body:   "return 42",
+	})
+	if !strings.Contains(result.Content, "return 42") {
+		t.Errorf("expected new return, got:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "return 1") {
+		t.Errorf("expected old return removed, got:\n%s", result.Content)
+	}
+}
+
+func TestReplaceMethodBody(t *testing.T) {
+	src := "package test\ntype S struct{}\nfunc (s *S) Hello() string {\n\treturn \"old\"\n}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "replace_body",
+		Target: "S.Hello",
+		Body:   "return \"new\"",
+	})
+	if !strings.Contains(result.Content, `"new"`) {
+		t.Errorf("expected new return, got:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, `"old"`) {
+		t.Errorf("expected old return removed, got:\n%s", result.Content)
+	}
+}
+
+func TestReplaceStruct(t *testing.T) {
+	src := "package test\ntype Config struct {\n\tX int\n}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "replace_struct",
+		Target: "Config",
+		Body:   "\tHost string\n\tPort int\n",
+	})
+	if !strings.Contains(result.Content, "Host string") {
+		t.Errorf("expected Host field, got:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "X int") {
+		t.Errorf("expected old field removed, got:\n%s", result.Content)
+	}
+}
+
+func TestReplaceInterface(t *testing.T) {
+	src := "package test\ntype Handler interface {\n\tOld()\n}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "replace_interface",
+		Target: "Handler",
+		Body:   "\tServeHTTP(w http.ResponseWriter, r *http.Request)\n",
+	})
+	if !strings.Contains(result.Content, "ServeHTTP") {
+		t.Errorf("expected new method, got:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "Old()") {
+		t.Errorf("expected old method removed, got:\n%s", result.Content)
+	}
+}
+
+func TestReplaceDecl(t *testing.T) {
+	src := "package test\nfunc Foo() int {\n\treturn 1\n}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "replace_decl",
+		Target: "Foo",
+		Source: "func Foo(n int) int {\n\treturn n * 2\n}",
+	})
+	if !strings.Contains(result.Content, "func Foo(n int) int") {
+		t.Errorf("expected new signature, got:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "return n * 2") {
+		t.Errorf("expected new body, got:\n%s", result.Content)
+	}
+}
+
+func TestAddFunctionWithBody(t *testing.T) {
+	src := "package test\n"
+	result := editTestHelper(t, src, Operation{
+		Op:      "add_function_with_body",
+		Name:    "Greet",
+		Params:  "name:string",
+		Returns: "string",
+		Body:    "return \"Hello, \" + name",
+	})
+	if !strings.Contains(result.Content, "func Greet(name string) string") {
+		t.Errorf("expected function signature, got:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, `"Hello, "`) {
+		t.Errorf("expected body, got:\n%s", result.Content)
+	}
+}
+
+func TestAddMethodWithBody(t *testing.T) {
+	src := "package test\ntype S struct{ Name string }\n"
+	result := editTestHelper(t, src, Operation{
+		Op:           "add_method_with_body",
+		Name:         "String",
+		ReceiverType: "*S",
+		ReceiverVar:  "s",
+		Returns:      "string",
+		Body:         "return s.Name",
+	})
+	if !strings.Contains(result.Content, "func (s *S) String() string") {
+		t.Errorf("expected method signature, got:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "return s.Name") {
+		t.Errorf("expected body, got:\n%s", result.Content)
+	}
+}
+
+func TestReplaceImports(t *testing.T) {
+	src := "package test\nimport \"fmt\"\nfunc Foo() {}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:      "replace_imports",
+		Imports: "\"net/http\"\n\"encoding/json\"",
+	})
+	if !strings.Contains(result.Content, "net/http") {
+		t.Errorf("expected new import, got:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "encoding/json") {
+		t.Errorf("expected new import, got:\n%s", result.Content)
+	}
+}
+
+func TestReplaceFile(t *testing.T) {
+	src := "package test\nfunc Old() {}\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.go")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	op := Operation{
+		Mode:   "edit",
+		File:   path,
+		Op:     "replace_file",
+		Source: "package test\n\nfunc New() int {\n\treturn 1\n}\n",
+	}
+	result, err := edit(op)
+	if err != nil {
+		t.Fatalf("edit failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("edit not successful: %v", result.Errors)
+	}
+	if !strings.Contains(result.Content, "func New()") {
+		t.Errorf("expected new func, got:\n%s", result.Content)
+	}
+	if strings.Contains(result.Content, "func Old()") {
+		t.Errorf("expected old func removed, got:\n%s", result.Content)
+	}
+}
+
+func TestInsertBeforeDecl(t *testing.T) {
+	src := "package test\nfunc B() {}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "insert_before_decl",
+		Target: "B",
+		Source: "func A() {}",
+	})
+	posA := strings.Index(result.Content, "func A()")
+	posB := strings.Index(result.Content, "func B()")
+	if posA < 0 || posB < 0 || posA >= posB {
+		t.Errorf("expected A before B, got:\n%s", result.Content)
+	}
+}
+
+func TestInsertAfterDecl(t *testing.T) {
+	src := "package test\nfunc A() {}\n"
+	result := editTestHelper(t, src, Operation{
+		Op:     "insert_after_decl",
+		Target: "A",
+		Source: "func B() {}",
+	})
+	posA := strings.Index(result.Content, "func A()")
+	posB := strings.Index(result.Content, "func B()")
+	if posA < 0 || posB < 0 || posA >= posB {
+		t.Errorf("expected B after A, got:\n%s", result.Content)
+	}
+}

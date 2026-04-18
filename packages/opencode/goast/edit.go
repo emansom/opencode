@@ -162,6 +162,28 @@ func edit(op Operation) (*EditResult, error) {
 	case "extract_interface":
 		modified, err = editExtractInterface(src, fset, file, op)
 
+	// High-level structural replacement
+	case "replace_body":
+		modified, err = editReplaceBody(src, fset, file, op)
+	case "replace_struct":
+		modified, err = editReplaceStruct(src, fset, file, op)
+	case "replace_interface":
+		modified, err = editReplaceInterface(src, fset, file, op)
+	case "replace_decl":
+		modified, err = editReplaceDecl(src, fset, file, op)
+	case "add_function_with_body":
+		modified, err = editAddFunctionWithBody(src, fset, file, op)
+	case "add_method_with_body":
+		modified, err = editAddMethodWithBody(src, fset, file, op)
+	case "replace_imports":
+		modified, err = editReplaceImports(src, fset, file, op)
+	case "replace_file":
+		return editReplaceFile(src, op)
+	case "insert_before_decl":
+		modified, err = editInsertBeforeDecl(src, fset, file, op)
+	case "insert_after_decl":
+		modified, err = editInsertAfterDecl(src, fset, file, op)
+
 	// Gopls-powered operations (cross-package, type-aware)
 	case "gopls_rename":
 		result, goplsErr := goplsRename(op)
@@ -1774,6 +1796,280 @@ func findCall(stmt ast.Stmt, callIndex *int) *ast.CallExpr {
 		return calls[idx]
 	}
 	return nil
+}
+
+// --- High-level structural replacement operations ---
+
+// parseSyntheticBody parses a function body from source text.
+// The body is the content between { and }, e.g. "return 42\n".
+func parseSyntheticBody(body string) (*ast.BlockStmt, error) {
+	synthetic := fmt.Sprintf("package _\nfunc _() {\n%s\n}", body)
+	synFset := token.NewFileSet()
+	synFile, err := parser.ParseFile(synFset, "", synthetic, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse body: %w", err)
+	}
+	return synFile.Decls[0].(*ast.FuncDecl).Body, nil
+}
+
+// parseSyntheticDecl parses a complete top-level declaration from source text.
+// source must be a valid Go declaration (func, type, var, const).
+func parseSyntheticDecl(source string) (ast.Decl, error) {
+	synthetic := fmt.Sprintf("package _\n%s", source)
+	synFset := token.NewFileSet()
+	synFile, err := parser.ParseFile(synFset, "", synthetic, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse declaration: %w", err)
+	}
+	if len(synFile.Decls) == 0 {
+		return nil, fmt.Errorf("no declarations found in source")
+	}
+	return synFile.Decls[0], nil
+}
+
+// editReplaceBody replaces the body of a function or method.
+// op.Target is the dotted path (e.g. "handleRequest" or "Server.Start").
+// op.Body is the new body content between { and }.
+func editReplaceBody(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	resolved, err := ResolveTarget(file, fset, op.Target)
+	if err != nil {
+		return nil, err
+	}
+	fd, ok := resolved.Node.(*ast.FuncDecl)
+	if !ok {
+		return nil, fmt.Errorf("target %q is not a function or method", op.Target)
+	}
+	newBody, err := parseSyntheticBody(op.Body)
+	if err != nil {
+		return nil, err
+	}
+	fd.Body = newBody
+	return formatNode(fset, file)
+}
+
+// editReplaceStruct replaces all fields of a struct type.
+// op.Target is the struct name. op.Body is the new field list content.
+func editReplaceStruct(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	resolved, err := ResolveTarget(file, fset, op.Target)
+	if err != nil {
+		return nil, err
+	}
+	ts, ok := resolved.Node.(*ast.TypeSpec)
+	if !ok {
+		return nil, fmt.Errorf("target %q is not a type", op.Target)
+	}
+	st, ok := ts.Type.(*ast.StructType)
+	if !ok {
+		return nil, fmt.Errorf("target %q is not a struct", op.Target)
+	}
+	synthetic := fmt.Sprintf("package _\ntype _ struct {\n%s\n}", op.Body)
+	synFset := token.NewFileSet()
+	synFile, err := parser.ParseFile(synFset, "", synthetic, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse struct body: %w", err)
+	}
+	synTs := synFile.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
+	st.Fields = synTs.Type.(*ast.StructType).Fields
+	return formatNode(fset, file)
+}
+
+// editReplaceInterface replaces all methods of an interface type.
+// op.Target is the interface name. op.Body is the new method list content.
+func editReplaceInterface(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	resolved, err := ResolveTarget(file, fset, op.Target)
+	if err != nil {
+		return nil, err
+	}
+	ts, ok := resolved.Node.(*ast.TypeSpec)
+	if !ok {
+		return nil, fmt.Errorf("target %q is not a type", op.Target)
+	}
+	it, ok := ts.Type.(*ast.InterfaceType)
+	if !ok {
+		return nil, fmt.Errorf("target %q is not an interface", op.Target)
+	}
+	synthetic := fmt.Sprintf("package _\ntype _ interface {\n%s\n}", op.Body)
+	synFset := token.NewFileSet()
+	synFile, err := parser.ParseFile(synFset, "", synthetic, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse interface body: %w", err)
+	}
+	synTs := synFile.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
+	it.Methods = synTs.Type.(*ast.InterfaceType).Methods
+	return formatNode(fset, file)
+}
+
+// editReplaceDecl replaces an entire declaration (function, method, or type) with new source.
+// op.Target is the dotted path. op.Source is the complete new declaration source.
+func editReplaceDecl(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	newDecl, err := parseSyntheticDecl(op.Source)
+	if err != nil {
+		return nil, err
+	}
+	target := op.Target
+	for i, decl := range file.Decls {
+		name := declName(decl)
+		if name == target {
+			file.Decls[i] = newDecl
+			return formatNode(fset, file)
+		}
+	}
+	return nil, fmt.Errorf("target %q not found", target)
+}
+
+// editAddFunctionWithBody creates a new function with a complete body.
+// op.Name is the function name. op.Params, op.Returns define the signature. op.Body is the body content.
+func editAddFunctionWithBody(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	params, err := ParseFlatParams(op.Params)
+	if err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	returns, err := ParseReturnTypes(op.Returns)
+	if err != nil {
+		return nil, fmt.Errorf("parse returns: %w", err)
+	}
+	body, err := parseSyntheticBody(op.Body)
+	if err != nil {
+		return nil, err
+	}
+	decl := &ast.FuncDecl{
+		Name: ast.NewIdent(op.Name),
+		Type: &ast.FuncType{
+			Params:  &ast.FieldList{List: params},
+			Results: returns,
+		},
+		Body: body,
+	}
+	file.Decls = appendDeclAtAnchor(file.Decls, decl, op.Anchor, op.Position)
+	return formatNode(fset, file)
+}
+
+// editAddMethodWithBody creates a new method with a complete body.
+func editAddMethodWithBody(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	params, err := ParseFlatParams(op.Params)
+	if err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	returns, err := ParseReturnTypes(op.Returns)
+	if err != nil {
+		return nil, fmt.Errorf("parse returns: %w", err)
+	}
+	body, err := parseSyntheticBody(op.Body)
+	if err != nil {
+		return nil, err
+	}
+	recvVar := op.ReceiverVar
+	if recvVar == "" {
+		recvVar = strings.ToLower(op.ReceiverType[:1])
+	}
+	decl := &ast.FuncDecl{
+		Recv: &ast.FieldList{
+			List: []*ast.Field{{
+				Names: []*ast.Ident{ast.NewIdent(recvVar)},
+				Type:  parseTypeExpr(op.ReceiverType),
+			}},
+		},
+		Name: ast.NewIdent(op.Name),
+		Type: &ast.FuncType{
+			Params:  &ast.FieldList{List: params},
+			Results: returns,
+		},
+		Body: body,
+	}
+	file.Decls = appendDeclAtAnchor(file.Decls, decl, op.Anchor, op.Position)
+	return formatNode(fset, file)
+}
+
+// editReplaceImports replaces the entire import block with new imports.
+// op.Imports is a newline-separated list of import specs, e.g.:
+//
+//	"net/http"
+//	alias "pkg/path"
+func editReplaceImports(src []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	// Remove all existing imports
+	for _, imp := range file.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		alias := ""
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		astutil.DeleteNamedImport(fset, file, alias, path)
+	}
+
+	// Parse and add new imports
+	lines := strings.Split(strings.TrimSpace(op.Imports), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Parse: optional alias then quoted path
+		var alias, path string
+		if strings.HasPrefix(line, `"`) {
+			path = strings.Trim(line, `"`)
+		} else {
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) == 2 {
+				alias = parts[0]
+				path = strings.Trim(parts[1], `"`)
+			} else {
+				path = strings.Trim(parts[0], `"`)
+			}
+		}
+		if path != "" {
+			astutil.AddNamedImport(fset, file, alias, path)
+		}
+	}
+
+	return formatNode(fset, file)
+}
+
+// editReplaceFile replaces the entire file content with new source.
+// op.Source must be a complete valid Go source file including package declaration.
+func editReplaceFile(_ []byte, op Operation) (*EditResult, error) {
+	synFset := token.NewFileSet()
+	_, err := parser.ParseFile(synFset, op.File, op.Source, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse new source: %w", err)
+	}
+	formatted, err := format.Source([]byte(op.Source))
+	if err != nil {
+		return nil, fmt.Errorf("format new source: %w", err)
+	}
+	old, readErr := os.ReadFile(op.File)
+	if readErr != nil {
+		old = []byte{}
+	}
+	if err := os.WriteFile(op.File, formatted, 0o644); err != nil {
+		return nil, fmt.Errorf("write file: %w", err)
+	}
+	return &EditResult{
+		Success: true,
+		Content: string(formatted),
+		Diff:    computeDiff(string(old), string(formatted)),
+	}, nil
+}
+
+// editInsertBeforeDecl inserts a source declaration immediately before the named declaration.
+// op.Target is the target declaration name. op.Source is the Go source to insert.
+func editInsertBeforeDecl(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	newDecl, err := parseSyntheticDecl(op.Source)
+	if err != nil {
+		return nil, err
+	}
+	file.Decls = appendDeclAtAnchor(file.Decls, newDecl, op.Target, "before")
+	return formatNode(fset, file)
+}
+
+// editInsertAfterDecl inserts a source declaration immediately after the named declaration.
+// op.Target is the target declaration name. op.Source is the Go source to insert.
+func editInsertAfterDecl(_ []byte, fset *token.FileSet, file *ast.File, op Operation) ([]byte, error) {
+	newDecl, err := parseSyntheticDecl(op.Source)
+	if err != nil {
+		return nil, err
+	}
+	file.Decls = appendDeclAtAnchor(file.Decls, newDecl, op.Target, "after")
+	return formatNode(fset, file)
 }
 
 func appendDeclAtAnchor(decls []ast.Decl, newDecl ast.Decl, anchor, position string) []ast.Decl {

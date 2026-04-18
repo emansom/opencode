@@ -39,7 +39,24 @@ export const RunIntentTool = Tool.define("run_intent", async () => ({
       )
     }
 
-    const result = await skillDef.execute(args, ctx)
+    let result
+    try {
+      result = await skillDef.execute(args, ctx)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("invalid arguments")) {
+        const schema = (skillDef as any).rawJsonSchema
+          ?? (z.toJSONSchema(skillDef.parameters) as Record<string, unknown>)
+        const props = (schema.properties as Record<string, { description?: string; type?: string }>) ?? {}
+        const required = new Set((schema.required as string[]) ?? [])
+        const hint = Object.entries(props)
+          .map(([k, v]) => `  - ${k} (${v.type ?? "string"}${required.has(k) ? ", required" : ", optional"}): ${v.description ?? ""}`)
+          .join("\n")
+        throw new Error(
+          `${err.message}\n\nCorrect parameters for "${params.intent}":\n${hint || "  (none)"}\n\nTip: call load_skill("${params.intent}") to see full instructions before using run_intent.`,
+        )
+      }
+      throw err
+    }
     return {
       title: result.title,
       output: result.output,

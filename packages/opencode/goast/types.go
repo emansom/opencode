@@ -98,6 +98,11 @@ type Operation struct {
 	Constraint string `json:"constraint,omitempty"`
 	Directive  string `json:"directive,omitempty"`
 	Block      string `json:"block,omitempty"`
+
+	// High-level structural replacement parameters
+	Body    string `json:"body,omitempty"`    // New body content (between { and }) for replace_body, add_*_with_body
+	Source  string `json:"source,omitempty"`  // Complete source text for replace_decl, replace_file, insert_before/after_decl
+	Imports string `json:"imports,omitempty"` // Newline-separated import specs for replace_imports
 }
 
 // EditResult is the output of an edit operation.

@@ -576,6 +576,96 @@ var opRegistry = []ToolInfo{
 	},
 
 	// --- Gopls-powered operations ---
+	// --- High-level structural replacement ---
+	{
+		Name: "go_replace_body", Op: "replace_body",
+		Description: "Replace the entire body of a function or method with new source. Use for large rewrites instead of many insert_* calls.",
+		Params: []ToolParam{
+			{Name: "target", Type: "string", Description: "Function or method path, e.g. handleRequest or Server.Start", Required: true},
+			{Name: "body", Type: "string", Description: "New body content between { and }. Must be valid Go statements.", Required: true},
+		},
+	},
+	{
+		Name: "go_replace_struct", Op: "replace_struct",
+		Description: "Replace all fields of a struct in one operation. Use when adding/removing multiple fields at once.",
+		Params: []ToolParam{
+			{Name: "target", Type: "string", Description: "Struct type name", Required: true},
+			{Name: "body", Type: "string", Description: "New field list content between { and }. Must be valid Go struct fields.", Required: true},
+		},
+	},
+	{
+		Name: "go_replace_interface", Op: "replace_interface",
+		Description: "Replace all methods/embeds of an interface in one operation.",
+		Params: []ToolParam{
+			{Name: "target", Type: "string", Description: "Interface type name", Required: true},
+			{Name: "body", Type: "string", Description: "New method list content between { and }. Must be valid Go interface methods.", Required: true},
+		},
+	},
+	{
+		Name: "go_replace_decl", Op: "replace_decl",
+		Description: "Replace an entire declaration (function, method, or type) with new source. Use for complete rewrites including signature changes.",
+		Params: []ToolParam{
+			{Name: "target", Type: "string", Description: "Declaration path to replace, e.g. handleRequest or Server.Start or Config", Required: true},
+			{Name: "source", Type: "string", Description: "Complete replacement declaration source (func ..., type ..., etc). Must be valid Go.", Required: true},
+		},
+	},
+	{
+		Name: "go_add_function_with_body", Op: "add_function_with_body",
+		Description: "Create a new function with a complete body in one step. Preferred over go_create_function + many go_insert_* calls.",
+		Params: []ToolParam{
+			{Name: "name", Type: "string", Description: "Function name", Required: true},
+			{Name: "body", Type: "string", Description: "Function body content between { and }. Must be valid Go statements.", Required: true},
+			{Name: "params", Type: "string", Description: "Parameters as name:type pairs, comma-separated. Example: ctx:context.Context,id:string"},
+			{Name: "returns", Type: "string", Description: "Return types, comma-separated. Example: *Config,error"},
+			{Name: "position", Type: "string", Description: "Where to place: first, last, before, after, at_index", Enum: []string{"first", "last", "before", "after", "at_index"}},
+			{Name: "anchor", Type: "string", Description: "Reference declaration for before/after positioning"},
+		},
+	},
+	{
+		Name: "go_add_method_with_body", Op: "add_method_with_body",
+		Description: "Create a new method with a complete body in one step. Preferred over go_create_method + many go_insert_* calls.",
+		Params: []ToolParam{
+			{Name: "name", Type: "string", Description: "Method name", Required: true},
+			{Name: "receiverType", Type: "string", Description: "Go type of receiver, e.g. *Server or Server", Required: true},
+			{Name: "body", Type: "string", Description: "Method body content between { and }. Must be valid Go statements.", Required: true},
+			{Name: "receiverVar", Type: "string", Description: "Receiver variable name, e.g. s. Derived from type if omitted"},
+			{Name: "params", Type: "string", Description: "Parameters as name:type pairs, comma-separated"},
+			{Name: "returns", Type: "string", Description: "Return types, comma-separated"},
+			{Name: "position", Type: "string", Description: "Where to place: first, last, before, after, at_index", Enum: []string{"first", "last", "before", "after", "at_index"}},
+			{Name: "anchor", Type: "string", Description: "Reference declaration for before/after positioning"},
+		},
+	},
+	{
+		Name: "go_replace_imports", Op: "replace_imports",
+		Description: "Replace the entire import block with a new set of imports in one call.",
+		Params: []ToolParam{
+			{Name: "imports", Type: "string", Description: "Newline-separated import specs, e.g. \"net/http\"\\nalias \"pkg/path\"", Required: true},
+		},
+	},
+	{
+		Name: "go_replace_file", Op: "replace_file",
+		Description: "Rewrite the entire file with new source. Source is validated and formatted before writing. Use for full-file rewrites.",
+		Params: []ToolParam{
+			{Name: "source", Type: "string", Description: "Complete Go source including package declaration. Must be valid Go.", Required: true},
+		},
+	},
+	{
+		Name: "go_insert_before_decl", Op: "insert_before_decl",
+		Description: "Insert a new declaration immediately before a named declaration. Useful for inserting helpers near their consumers.",
+		Params: []ToolParam{
+			{Name: "target", Type: "string", Description: "Name of existing declaration to insert before", Required: true},
+			{Name: "source", Type: "string", Description: "Complete Go declaration source to insert (func, type, var, const). Must be valid Go.", Required: true},
+		},
+	},
+	{
+		Name: "go_insert_after_decl", Op: "insert_after_decl",
+		Description: "Insert a new declaration immediately after a named declaration.",
+		Params: []ToolParam{
+			{Name: "target", Type: "string", Description: "Name of existing declaration to insert after", Required: true},
+			{Name: "source", Type: "string", Description: "Complete Go declaration source to insert (func, type, var, const). Must be valid Go.", Required: true},
+		},
+	},
+
 	{
 		Name: "go_gopls_rename", Op: "gopls_rename",
 		Description: "Cross-package rename using gopls. Renames the symbol across all files in the module.",
@@ -634,6 +724,7 @@ Example: Create a function and add a statement to it (two separate tool calls):
 		{"File", []string{"set_package", "set_build_constraint", "add_generate_directive"}},
 		{"Comment", []string{"set_doc_comment", "remove_doc_comment", "add_line_comment"}},
 		{"Refactor", []string{"rename", "extract_interface", "gopls_rename", "organize_imports"}},
+		{"Structural", []string{"replace_body", "replace_struct", "replace_interface", "replace_decl", "add_function_with_body", "add_method_with_body", "replace_imports", "replace_file", "insert_before_decl", "insert_after_decl"}},
 	}
 
 	// Build a lookup from op → ToolInfo
