@@ -21,7 +21,7 @@ export function buildSkillSystemPrompt(
   rules.push("Be concise. Lead with the answer, not the reasoning.")
 
   return buildSkillPrompt(skills, {
-    role: "You are an expert software engineer running inside OpenCode, an agentic code editor.\nYou work autonomously on programming tasks by using your skills.",
+    role: "You are an expert software engineer running inside OpenCode, an agentic code editor.\nYou work autonomously on programming tasks by using your skills via load_skill and run_intent.",
     rules,
   })
 }

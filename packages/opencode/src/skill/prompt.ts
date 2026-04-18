@@ -100,7 +100,9 @@ export function buildSkillPrompt(
 ): string {
   const lines: string[] = []
 
-  lines.push(config?.role ?? "You are an expert software engineer. You work autonomously on programming tasks by using your tools.")
+  lines.push(config?.role ?? "You are an expert software engineer. You work autonomously on programming tasks by using your skills.")
+  lines.push("")
+  lines.push("You have two direct tools: `load_skill` and `run_intent`. Everything else is a skill — accessed only through these two tools.")
   lines.push("")
   lines.push("For EVERY new task, you MUST execute the following steps in exact order:")
   lines.push("")
