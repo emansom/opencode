@@ -37,6 +37,7 @@ export const GoFixTool = Tool.define("go_fix", {
       throw new Error(`File not found: ${filePath}`)
     }
 
+    await FileTime.read(ctx.sessionID, filePath)
     await FileTime.assert(ctx.sessionID, filePath)
 
     const result = await execGoAst({ mode: "fix", file: filePath })

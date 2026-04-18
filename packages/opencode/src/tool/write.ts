@@ -26,8 +26,12 @@ export const WriteTool = Tool.define("write", {
   async execute(params, ctx) {
     const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
 
-    if (filepath.endsWith(".go") && await Filesystem.exists(filepath)) {
-      throw new Error("Cannot use the write tool to modify existing .go files. Use AST editing tools like go_create_function, go_add_struct_field, go_insert_call, etc. If the file has syntax errors, use go_fix first.")
+    if (filepath.endsWith(".go")) {
+      throw new Error(
+        `The write skill cannot be used to write Go source files. ` +
+        `Use the Go AST edit skills instead (go_replace_file for full rewrites, ` +
+        `or individual go_add_* / go_replace_* skills for targeted edits).`,
+      )
     }
     await assertExternalDirectory(ctx, filepath)
 

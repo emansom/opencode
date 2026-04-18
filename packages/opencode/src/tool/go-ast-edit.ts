@@ -116,6 +116,7 @@ function defineGoOp(info: ToolInfo) {
       let diagnosticOutput = ""
 
       await FileTime.withLock(filePath, async () => {
+        await FileTime.read(ctx.sessionID, filePath)
         await FileTime.assert(ctx.sessionID, filePath)
 
         const contentOld = await Filesystem.readText(filePath)

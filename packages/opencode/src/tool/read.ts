@@ -85,6 +85,16 @@ export const ReadTool = Tool.defineEffect(
         return yield* Effect.fail(new Error("offset must be greater than or equal to 1"))
       }
 
+      if (params.filePath.endsWith(".go")) {
+        return yield* Effect.fail(
+          new Error(
+            `The read skill cannot be used to read Go source files. ` +
+            `Use the go_ast_inspect skill instead: ` +
+            `run_intent(intent="go_ast_inspect", parameters={"filePath":"${params.filePath}"})`,
+          ),
+        )
+      }
+
       let filepath = params.filePath
       if (!path.isAbsolute(filepath)) {
         filepath = path.resolve(Instance.directory, filepath)
