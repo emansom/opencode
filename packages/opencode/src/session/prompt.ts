@@ -9,7 +9,7 @@ import { Session } from "."
 import { Agent } from "../agent/agent"
 import { Provider } from "../provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
-import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
+import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions } from "ai"
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider/transform"
@@ -444,97 +444,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             },
           })
           tools[item.id] = t
-        }
-
-        for (const [key, item] of Object.entries(yield* mcp.tools())) {
-          const execute = item.execute
-          if (!execute) continue
-
-          const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-          let transformed = ProviderTransform.schema(input.model, schema)
-
-          // Flatten nested MCP tool parameters to basic types
-          let mcpFlattenMap: FlattenMap | undefined
-          const { flattenedSchema: mcpFlat, flattenMap: mcpFm } = flattenToolSchema(transformed)
-          if (mcpFm.size > 0) {
-            transformed = mcpFlat
-            mcpFlattenMap = mcpFm
-          }
-
-          item.inputSchema = jsonSchema(transformed)
-          item.execute = (args, opts) =>
-            Effect.runPromise(
-              Effect.gen(function* () {
-                // Expand flat args back to nested structure for MCP server
-                const expanded = mcpFlattenMap
-                  ? expandToolCallArgs(args as Record<string, unknown>, mcpFlattenMap)
-                  : args
-                const ctx = context(expanded, opts)
-                yield* plugin.trigger(
-                  "tool.execute.before",
-                  { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
-                  { args: expanded },
-                )
-                yield* Effect.promise(() => ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] }))
-                const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.promise(() =>
-                  execute(expanded, opts),
-                )
-                yield* plugin.trigger(
-                  "tool.execute.after",
-                  { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
-                  result,
-                )
-
-                const textParts: string[] = []
-                const attachments: Omit<MessageV2.FilePart, "id" | "sessionID" | "messageID">[] = []
-                for (const contentItem of result.content) {
-                  if (contentItem.type === "text") textParts.push(contentItem.text)
-                  else if (contentItem.type === "image") {
-                    attachments.push({
-                      type: "file",
-                      mime: contentItem.mimeType,
-                      url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-                    })
-                  } else if (contentItem.type === "resource") {
-                    const { resource } = contentItem
-                    if (resource.text) textParts.push(resource.text)
-                    if (resource.blob) {
-                      attachments.push({
-                        type: "file",
-                        mime: resource.mimeType ?? "application/octet-stream",
-                        url: `data:${resource.mimeType ?? "application/octet-stream"};base64,${resource.blob}`,
-                        filename: resource.uri,
-                      })
-                    }
-                  }
-                }
-
-                const truncated = yield* truncate.output(textParts.join("\n\n"), {}, input.agent)
-                const metadata = {
-                  ...(result.metadata ?? {}),
-                  truncated: truncated.truncated,
-                  ...(truncated.truncated && { outputPath: truncated.outputPath }),
-                }
-
-                const output = {
-                  title: "",
-                  metadata,
-                  output: truncated.content,
-                  attachments: attachments.map((attachment) => ({
-                    ...attachment,
-                    id: PartID.ascending(),
-                    sessionID: ctx.sessionID,
-                    messageID: input.processor.message.id,
-                  })),
-                  content: result.content,
-                }
-                if (opts.abortSignal?.aborted) {
-                  yield* input.processor.completeToolCall(opts.toolCallId, output)
-                }
-                return output
-              }),
-            )
-          tools[key] = item
         }
 
         return tools

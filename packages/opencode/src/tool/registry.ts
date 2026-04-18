@@ -41,6 +41,8 @@ import { FileTime } from "../file/time"
 import { Instruction } from "../session/instruction"
 import { AppFileSystem } from "../filesystem"
 import { Agent } from "../agent/agent"
+import { MCP } from "../mcp"
+import { asSchema, type FlexibleSchema } from "ai"
 
 // Shared state for both ToolRegistry and SkillRegistry
 type State = {
@@ -79,11 +81,13 @@ const sharedLayer: Layer.Layer<
   | FileTime.Service
   | Instruction.Service
   | AppFileSystem.Service
+  | MCP.Service
 > = Layer.effect(
   SharedService,
   Effect.gen(function* () {
     const config = yield* Config.Service
     const plugin = yield* Plugin.Service
+    const mcp = yield* MCP.Service
 
     const task = yield* TaskTool
     const read = yield* ReadTool
@@ -232,10 +236,84 @@ const sharedLayer: Layer.Layer<
       )
     })
 
+    // Convert MCP AI SDK Tool objects into Tool.Def for the skill registry
+    function wrapMcpTool(key: string, mcpTool: { description?: string; inputSchema?: {}; execute?: Function }): Tool.Def {
+      // Extract JSON schema from the MCP tool's inputSchema
+      let rawSchema: Record<string, unknown> = { type: "object", properties: {}, additionalProperties: false }
+      if (mcpTool.inputSchema) {
+        // inputSchema is typed as {} by dynamicTool, but is always a FlexibleSchema at runtime
+        const resolved = asSchema(mcpTool.inputSchema as FlexibleSchema<unknown>).jsonSchema
+        rawSchema = resolved as Record<string, unknown>
+      }
+
+      return {
+        id: key,
+        description: mcpTool.description ?? "",
+        parameters: z.record(z.string(), z.any()),
+        rawJsonSchema: rawSchema,
+        async execute(args, ctx) {
+          // Permission check
+          await ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
+
+          // Execute the MCP tool
+          const result = await mcpTool.execute!(args, {
+            toolCallId: ctx.callID ?? "",
+            messages: ctx.messages,
+            abortSignal: ctx.abort,
+          })
+
+          // Parse MCP content format to plain text + attachments
+          const textParts: string[] = []
+          const attachments: any[] = []
+          for (const contentItem of (result as any).content ?? []) {
+            if (contentItem.type === "text") textParts.push(contentItem.text)
+            else if (contentItem.type === "image") {
+              attachments.push({
+                type: "file",
+                mime: contentItem.mimeType,
+                url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+              })
+            } else if (contentItem.type === "resource") {
+              const { resource } = contentItem
+              if (resource?.text) textParts.push(resource.text)
+              if (resource?.blob) {
+                attachments.push({
+                  type: "file",
+                  mime: resource.mimeType ?? "application/octet-stream",
+                  url: `data:${resource.mimeType ?? "application/octet-stream"};base64,${resource.blob}`,
+                  filename: resource.uri,
+                })
+              }
+            }
+          }
+
+          const output = textParts.join("\n\n")
+          const truncated = await Truncate.output(output, {}, await Agent.get(ctx.agent))
+          return {
+            title: "",
+            output: truncated.truncated ? truncated.content : output,
+            metadata: {
+              ...((result as any).metadata ?? {}),
+              truncated: truncated.truncated,
+              ...(truncated.truncated && { outputPath: truncated.outputPath }),
+            },
+            ...(attachments.length > 0 && { attachments }),
+          }
+        },
+      }
+    }
+
     // SkillRegistry methods: all skill implementations
     const skills: SharedInterface["skills"] = Effect.fn("SkillRegistry.skills")(function* (input) {
       const s = yield* InstanceState.get(state)
-      const allSkills = [...s.skills, ...s.custom]
+      const allSkills: Tool.Def[] = [...s.skills, ...s.custom]
+
+      // Include MCP tools as skills
+      const mcpTools = yield* mcp.tools()
+      for (const [key, mcpTool] of Object.entries(mcpTools)) {
+        if (!mcpTool.execute) continue
+        allSkills.push(wrapMcpTool(key, mcpTool))
+      }
 
       const filtered = allSkills.filter((tool) => {
         if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
@@ -277,7 +355,16 @@ const sharedLayer: Layer.Layer<
 
     const getSkill: SharedInterface["getSkill"] = Effect.fn("SkillRegistry.get")(function* (name, _input) {
       const s = yield* InstanceState.get(state)
-      return [...s.skills, ...s.custom].find((t) => t.id === name)
+      const found = [...s.skills, ...s.custom].find((t) => t.id === name)
+      if (found) return found
+
+      // Check MCP tools
+      const mcpTools = yield* mcp.tools()
+      const mcpEntry = Object.entries(mcpTools).find(([key]) => key === name)
+      if (mcpEntry && mcpEntry[1].execute) {
+        return wrapMcpTool(mcpEntry[0], mcpEntry[1])
+      }
+      return undefined
     })
 
     return SharedService.of({ toolIds, toolAll, tools, skills, getSkill })
@@ -304,6 +391,7 @@ export namespace ToolRegistry {
         Layer.provide(FileTime.defaultLayer),
         Layer.provide(Instruction.defaultLayer),
         Layer.provide(AppFileSystem.defaultLayer),
+        Layer.provide(MCP.defaultLayer),
       ),
     ),
   )

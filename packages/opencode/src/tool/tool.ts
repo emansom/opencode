@@ -30,6 +30,8 @@ export namespace Tool {
     id: string
     description: string
     parameters: Parameters
+    /** Raw JSON Schema for tools with dynamic schemas (e.g. MCP tools). Preferred over z.toJSONSchema(parameters) in load-skill. */
+    rawJsonSchema?: Record<string, unknown>
     execute(
       args: z.infer<Parameters>,
       ctx: Context,

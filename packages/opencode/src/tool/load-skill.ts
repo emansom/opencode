@@ -96,11 +96,11 @@ export const LoadSkillTool = Tool.define("load_skill", async () => ({
       )
     }
 
-    const schema = z.toJSONSchema(skillDef.parameters)
+    const schema = skillDef.rawJsonSchema ?? (z.toJSONSchema(skillDef.parameters) as Record<string, unknown>)
     const source: ToolSkillSource = {
       id: skillDef.id,
       description: skillDef.description,
-      parameters: schema as Record<string, unknown>,
+      parameters: schema,
     }
 
     // For Go AST tools, include the operation reference
